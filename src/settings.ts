@@ -1,9 +1,11 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import AiNoteAssistantPlugin from './main';
+import type { ModelApiFormat } from './model/openai-protocol';
 
 export interface AiNoteAssistantSettings {
 	remoteModelEnabled: boolean;
 	apiBaseUrl: string;
+	apiFormat: ModelApiFormat;
 	modelName: string;
 	apiKey: string;
 	localCandidateLimit: number;
@@ -13,7 +15,8 @@ export interface AiNoteAssistantSettings {
 
 export const DEFAULT_SETTINGS: AiNoteAssistantSettings = {
 	remoteModelEnabled: false,
-	apiBaseUrl: 'https://api.openai.com/v1',
+	apiBaseUrl: 'https://api.openai.com/v1/chat/completions',
+	apiFormat: 'chat-completions',
 	modelName: 'gpt-4o-mini',
 	apiKey: '',
 	localCandidateLimit: 20,
@@ -42,7 +45,19 @@ export class AssistantSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 			}));
 
-		this.addTextSetting(containerEl, 'API 地址', 'OpenAI-compatible 接口地址。', 'apiBaseUrl', DEFAULT_SETTINGS.apiBaseUrl);
+		new Setting(containerEl)
+			.setName('响应格式')
+			.setDesc('选择服务实际使用的 OpenAI-compatible 协议。')
+			.addDropdown((dropdown) => dropdown
+				.addOption('chat-completions', 'Chat completions')
+				.addOption('responses', 'Responses API')
+				.setValue(this.plugin.settings.apiFormat)
+				.onChange(async (value: string) => {
+					this.plugin.settings.apiFormat = value === 'responses' ? 'responses' : 'chat-completions';
+					await this.plugin.saveSettings();
+				}));
+
+		this.addTextSetting(containerEl, 'API 完整地址', '请求会直接发送到此地址，不会追加或修改路径。', 'apiBaseUrl', DEFAULT_SETTINGS.apiBaseUrl);
 		this.addTextSetting(containerEl, '模型名称', '发送给 API 的模型标识。', 'modelName', DEFAULT_SETTINGS.modelName);
 
 		new Setting(containerEl)
