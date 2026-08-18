@@ -3,3 +3,18 @@
 
 # Local copy of the official sample plugin
 /obsidian-sample-plugin-master/
+
+# Dependencies and build output
+node_modules/
+main.js
+*.map
+data.json
+
+# Development vault build output
+dev-vault/.obsidian/plugins/ai-note-assistant/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.iml
+.DS_Store

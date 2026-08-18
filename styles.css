@@ -1,0 +1,51 @@
+.ai-note-assistant-view {
+	padding: 16px;
+}
+
+.ai-note-assistant-header h2,
+.ai-note-assistant-section h3 {
+	margin: 0;
+}
+
+.ai-note-assistant-subtitle {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	margin: 6px 0 0;
+}
+
+.ai-note-assistant-section {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 18px;
+	padding-top: 14px;
+}
+
+.ai-note-assistant-section h3 {
+	font-size: var(--font-ui-small);
+	margin-bottom: 8px;
+}
+
+.ai-note-assistant-context {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	line-height: 1.5;
+}
+
+.ai-note-assistant-actions {
+	display: grid;
+	gap: 8px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-note-assistant-actions button {
+	min-height: 32px;
+}
+
+.ai-note-assistant-status {
+	background: var(--background-secondary);
+	border-left: 3px solid var(--interactive-accent);
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	line-height: 1.5;
+	margin-top: 18px;
+	padding: 10px;
+}
