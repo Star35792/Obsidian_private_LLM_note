@@ -1,0 +1,5 @@
+# Local Obsidian application files
+/Obsidian/
+
+# Local copy of the official sample plugin
+/obsidian-sample-plugin-master/
