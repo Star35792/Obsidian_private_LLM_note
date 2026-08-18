@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Note_Edit 的 AI 工程任务遵循 [AI 开发流水线](../ai-development-pipeline.md)：先读 `CONTEXT.md`、ADR、专题文档、memory 和代码，再澄清需求与验收标准，切分最小实现，开发并测试，更新仓库内 memory，最后只提交本次授权范围内的 Git 变更。
+Note_Edit 的 AI 工程任务遵循 [AI 开发流水线](../process/ai-development-pipeline.md)：先从 [docs/README.md](../README.md) 进入，读取 `CONTEXT.md`、ADR、专题文档、memory 和代码，再澄清需求与验收标准，切分最小实现，开发并测试，更新仓库内 memory，最后只提交本次授权范围内的 Git 变更。
 
 稳定质量门槛：代码修改前先读目标文件；模型写工具必须经过 `ChangePlan` 和用户确认；外部输入、模型输出和 Vault 路径在边界校验；相关测试、build、lint 和 `git diff --check` 通过后才提交；提交使用 Conventional Commits，不 amend、不改 Git 配置、不跳过 hooks。
 
