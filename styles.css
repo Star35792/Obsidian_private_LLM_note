@@ -40,6 +40,12 @@
 	min-height: 32px;
 }
 
+.ai-note-assistant-run {
+	grid-column: 1 / -1;
+	margin-top: 4px;
+	min-height: 36px;
+}
+
 .ai-note-assistant-status {
 	background: var(--background-secondary);
 	border-left: 3px solid var(--interactive-accent);
@@ -48,4 +54,23 @@
 	line-height: 1.5;
 	margin-top: 18px;
 	padding: 10px;
+}
+
+.ai-note-assistant-modal-actions {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 16px;
+}
+
+.ai-note-assistant-preview-grid {
+	display: grid;
+	gap: 12px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-note-assistant-preview-grid pre {
+	max-height: 360px;
+	overflow: auto;
+	white-space: pre-wrap;
 }

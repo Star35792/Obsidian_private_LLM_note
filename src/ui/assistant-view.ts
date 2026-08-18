@@ -18,6 +18,7 @@ export class AssistantView extends ItemView {
 	private readonly plugin: AiNoteAssistantPlugin;
 	mode: AssistantMode = 'organize';
 	private contextEl?: HTMLElement;
+	private statusEl?: HTMLElement;
 
 	constructor(leaf: WorkspaceLeaf, plugin: AiNoteAssistantPlugin) {
 		super(leaf);
@@ -51,6 +52,10 @@ export class AssistantView extends ItemView {
 		this.render();
 	}
 
+	setStatus(status: string): void {
+		if (this.statusEl) this.statusEl.setText(status);
+	}
+
 	private render(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -77,14 +82,23 @@ export class AssistantView extends ItemView {
 			button.addEventListener('click', () => this.setMode(mode));
 		});
 
-		const status = contentEl.createDiv({ cls: 'ai-note-assistant-status' });
-		status.setText(`${MODE_LABELS[this.mode]}动作将在后续切片中启用。当前仅完成插件骨架。`);
+		const runButton = actionsSection.createEl('button', {
+			text: this.mode === 'organize' ? '生成整理预览' : `运行${MODE_LABELS[this.mode]}`,
+			cls: 'ai-note-assistant-run mod-cta',
+		});
+		runButton.type = 'button';
+		runButton.addEventListener('click', () => void this.plugin.runMode(this.mode));
+
+		this.statusEl = contentEl.createDiv({ cls: 'ai-note-assistant-status' });
+		this.statusEl.setText(this.mode === 'organize'
+			? '整理会读取当前笔记，并在发送前显示范围。'
+			: `${MODE_LABELS[this.mode]}动作将在后续切片中启用。`);
 	}
 
 	private renderContext(): void {
 		if (!this.contextEl) return;
 		const markdownView = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
-		const fileName = markdownView?.file?.path ?? '尚未打开 Markdown 笔记';
+		const fileName = this.plugin.app.workspace.getActiveFile()?.path ?? markdownView?.file?.path ?? '尚未打开 Markdown 笔记';
 		const selection = markdownView?.editor.getSelection().trim();
 		this.contextEl.createDiv({ text: `笔记：${fileName}` });
 		this.contextEl.createDiv({
