@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildOpenAiBody, buildOpenAiRequest, readOpenAiContent } from '../src/model/openai-protocol';
+import {
+	buildOpenAiBody,
+	buildOpenAiRequest,
+	readOpenAiContent,
+	readOpenAiStreamDelta,
+} from '../src/model/openai-protocol';
 
 const request = { system: '系统指令', user: '用户内容' };
 
@@ -26,6 +31,17 @@ describe('OpenAI protocol', () => {
 		});
 	});
 
+	it('enables streaming without changing the selected protocol', () => {
+		expect(buildOpenAiBody('chat-completions', 'test-model', request, true)).toMatchObject({
+			model: 'test-model',
+			stream: true,
+		});
+		expect(buildOpenAiBody('responses', 'test-model', request, true)).toMatchObject({
+			model: 'test-model',
+			stream: true,
+		});
+	});
+
 	it('builds a Responses API request body', () => {
 		expect(buildOpenAiBody('responses', 'test-model', request)).toEqual({
 			model: 'test-model',
@@ -46,5 +62,15 @@ describe('OpenAI protocol', () => {
 		expect(readOpenAiContent('responses', {
 			output: [{ type: 'message', content: [{ type: 'output_text', text: '{"summary":"nested"}' }] }],
 		})).toBe('{"summary":"nested"}');
+	});
+
+	it('reads streaming deltas from both protocols', () => {
+		expect(readOpenAiStreamDelta('chat-completions', {
+			choices: [{ delta: { content: '{"summary"' } }],
+		})).toBe('{"summary"');
+		expect(readOpenAiStreamDelta('responses', {
+			type: 'response.output_text.delta',
+			delta: '{"summary"',
+		})).toBe('{"summary"');
 	});
 });

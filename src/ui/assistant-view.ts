@@ -19,6 +19,10 @@ export class AssistantView extends ItemView {
 	mode: AssistantMode = 'organize';
 	private contextEl?: HTMLElement;
 	private statusEl?: HTMLElement;
+	private processEl?: HTMLElement;
+	private streamEl?: HTMLElement;
+	private processSteps: string[] = [];
+	private streamedText = '';
 
 	constructor(leaf: WorkspaceLeaf, plugin: AiNoteAssistantPlugin) {
 		super(leaf);
@@ -54,6 +58,22 @@ export class AssistantView extends ItemView {
 
 	setStatus(status: string): void {
 		if (this.statusEl) this.statusEl.setText(status);
+	}
+
+	beginProcess(): void {
+		this.processSteps = [];
+		this.streamedText = '';
+		this.renderProcess();
+	}
+
+	addProcessStep(step: string): void {
+		this.processSteps.push(step);
+		this.renderProcess();
+	}
+
+	appendStreamDelta(delta: string): void {
+		this.streamedText += delta;
+		if (this.streamEl) this.streamEl.setText(this.streamedText);
 	}
 
 	private render(): void {
@@ -93,6 +113,13 @@ export class AssistantView extends ItemView {
 		this.statusEl.setText(this.mode === 'organize'
 			? '整理会读取当前笔记，并在发送前显示范围。'
 			: `${MODE_LABELS[this.mode]}动作将在后续切片中启用。`);
+
+		const processSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
+		processSection.createEl('h3', { text: '处理过程' });
+		this.processEl = processSection.createDiv({ cls: 'ai-note-assistant-process' });
+		processSection.createEl('h3', { text: '模型实时输出' });
+		this.streamEl = processSection.createEl('pre', { cls: 'ai-note-assistant-stream' });
+		this.renderProcess();
 	}
 
 	private renderContext(): void {
@@ -104,5 +131,17 @@ export class AssistantView extends ItemView {
 		this.contextEl.createDiv({
 			text: selection ? `选区：${selection.slice(0, 120)}${selection.length > 120 ? '…' : ''}` : '选区：未选择文本，将使用当前笔记。',
 		});
+	}
+
+	private renderProcess(): void {
+		if (this.processEl) {
+			this.processEl.empty();
+			if (this.processSteps.length === 0) {
+				this.processEl.createDiv({ text: '等待开始。' });
+			} else {
+				for (const step of this.processSteps) this.processEl.createDiv({ text: `• ${step}` });
+			}
+		}
+		if (this.streamEl) this.streamEl.setText(this.streamedText || '模型开始生成后会显示在这里。');
 	}
 }

@@ -10,6 +10,7 @@ export interface AssistantProposal {
 	questions: string[];
 	assumptions: string[];
 	nextSteps: string[];
+	rationale: string[];
 	classification?: ClassificationSuggestion;
 }
 
@@ -29,6 +30,7 @@ export function parseAssistantProposal(raw: string): AssistantProposal {
 			questions: readStringArray(value.questions),
 			assumptions: readStringArray(value.assumptions),
 			nextSteps: readStringArray(value.nextSteps),
+			rationale: readStringArray(value.rationale),
 		};
 
 		if (value.classification !== undefined) {
@@ -53,6 +55,7 @@ export function proposalToMarkdown(proposal: AssistantProposal): string {
 		formatListSection('已确认', proposal.confirmed),
 		formatListSection('待澄清', [...proposal.questions, ...proposal.assumptions.map((item) => `未验证的假设：${item}`)]),
 		proposal.classification ? formatClassification(proposal.classification) : '',
+		formatListSection('整理依据', proposal.rationale),
 		formatListSection('下一步', proposal.nextSteps),
 	].filter(Boolean);
 	return `${sections.join('\n\n')}\n`;

@@ -56,6 +56,24 @@
 	padding: 10px;
 }
 
+.ai-note-assistant-process {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	line-height: 1.6;
+	margin-bottom: 12px;
+}
+
+.ai-note-assistant-stream {
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	font-size: var(--font-smallest);
+	max-height: 260px;
+	overflow: auto;
+	padding: 10px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 .ai-note-assistant-modal-actions {
 	display: flex;
 	gap: 8px;

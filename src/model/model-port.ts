@@ -5,8 +5,14 @@ export interface ModelRequest {
 
 export interface ModelResponse {
 	content: string;
+	streamed: boolean;
+}
+
+export interface ModelCompletionOptions {
+	signal?: AbortSignal;
+	onDelta?: (delta: string) => void;
 }
 
 export interface ModelPort {
-	complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelResponse>;
+	complete(request: ModelRequest, options?: ModelCompletionOptions): Promise<ModelResponse>;
 }

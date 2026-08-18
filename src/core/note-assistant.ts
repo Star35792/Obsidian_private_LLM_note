@@ -1,4 +1,4 @@
-import type { ModelPort } from '../model/model-port';
+import type { ModelCompletionOptions, ModelPort } from '../model/model-port';
 import {
 	parseAssistantProposal,
 	proposalToMarkdown,
@@ -13,6 +13,7 @@ export interface OrganizeRequest {
 export interface OrganizeResult {
 	proposal: AssistantProposal;
 	markdown: string;
+	streamed: boolean;
 }
 
 export class NoteAssistant {
@@ -22,12 +23,13 @@ export class NoteAssistant {
 		this.model = model;
 	}
 
-	async organize(request: OrganizeRequest, signal?: AbortSignal): Promise<OrganizeResult> {
+	async organize(request: OrganizeRequest, options?: ModelCompletionOptions): Promise<OrganizeResult> {
 		const response = await this.model.complete({
 			system: [
 				'你是一个尊重用户原意的 AI 笔记整理助手。',
 				'只返回合法 JSON，不要使用 Markdown 代码围栏。',
-				'JSON 必须包含 summary、confirmed、questions、assumptions、nextSteps 五个字段，数组字段只能包含字符串。',
+				'JSON 必须包含 summary、confirmed、questions、assumptions、nextSteps、rationale 六个字段，数组字段只能包含字符串。',
+				'rationale 只简要说明整理结果依据了原文中的哪些可核对内容，不要输出隐藏思维链。',
 				'可选 classification 对象包含 type、tags、reason。不能把推测写成事实。',
 			].join('\n'),
 			user: [
@@ -39,8 +41,8 @@ export class NoteAssistant {
 				'---',
 				'笔记内容结束',
 			].filter(Boolean).join('\n'),
-		}, signal);
+		}, options);
 		const proposal = parseAssistantProposal(response.content);
-		return { proposal, markdown: proposalToMarkdown(proposal) };
+		return { proposal, markdown: proposalToMarkdown(proposal), streamed: response.streamed };
 	}
 }

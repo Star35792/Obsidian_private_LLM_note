@@ -67,7 +67,10 @@ export default class AiNoteAssistantPlugin extends Plugin {
 
 	async runMode(mode: AssistantView['mode']): Promise<void> {
 		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
-		if (view instanceof AssistantView) view.setStatus('正在读取当前笔记…');
+		if (view instanceof AssistantView) {
+			view.beginProcess();
+			view.setStatus('正在读取当前笔记…');
+		}
 		if (mode !== 'organize') {
 			new Notice('该动作将在后续切片中启用。当前可用动作是“整理”。');
 			if (view instanceof AssistantView) view.setStatus('当前可用动作是“整理”。');
@@ -81,15 +84,29 @@ export default class AiNoteAssistantPlugin extends Plugin {
 
 		try {
 			const source = await this.vaultAdapter.readActive();
+			if (view instanceof AssistantView) view.addProcessStep(`已读取 ${source.path}（${source.content.length} 个字符）`);
 			if (!this.remoteConfirmedThisSession) {
+				if (view instanceof AssistantView) view.addProcessStep('等待确认本次发送范围');
 				const confirmed = await confirmRemoteSend(this.app, source.path, source.content);
 				if (!confirmed) {
 					if (view instanceof AssistantView) view.setStatus('已取消发送，原笔记未改变。');
 					return;
 				}
 				this.remoteConfirmedThisSession = true;
+				if (view instanceof AssistantView) view.addProcessStep('用户已确认发送当前笔记内容');
 			}
-			const result = await this.assistant.organize({ content: source.content });
+			if (view instanceof AssistantView) {
+				view.addProcessStep(`正在请求 ${this.settings.modelName}`);
+				view.setStatus('模型正在生成结构化草稿…');
+			}
+			const result = await this.assistant.organize(
+				{ content: source.content },
+				{ onDelta: (delta) => view instanceof AssistantView && view.appendStreamDelta(delta) },
+			);
+			if (view instanceof AssistantView) {
+				view.addProcessStep(result.streamed ? '流式输出接收完成' : '流式连接不可用，已完成普通响应');
+				view.addProcessStep('结构化结果校验通过');
+			}
 			const preview = buildChangePreview(
 				source,
 				[createAppendChange(source.content, `\n\n${result.markdown}`)],
@@ -100,7 +117,10 @@ export default class AiNoteAssistantPlugin extends Plugin {
 				new Notice('整理结果已追加到当前笔记。');
 				if (view instanceof AssistantView) view.setStatus('已写回整理结果。');
 			});
-			if (view instanceof AssistantView) view.setStatus('已生成预览，请确认写回方式。');
+			if (view instanceof AssistantView) {
+				view.addProcessStep('写回预览已生成，原笔记尚未修改');
+				view.setStatus('已生成预览，请确认写回方式。');
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : '未知错误';
 			new Notice(`整理失败：${message}`);
