@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
+	buildOpenAiAgentBody,
 	buildOpenAiBody,
 	buildOpenAiRequest,
+	readOpenAiAgentTurn,
 	readOpenAiContent,
 	readOpenAiStreamDelta,
 } from '../src/model/openai-protocol';
+import type { AgentMessage, AgentToolDescription } from '../src/agent/agent-loop';
 
 const request = { system: '系统指令', user: '用户内容' };
+const agentMessages: AgentMessage[] = [
+	{ role: 'user', content: '读取当前笔记' },
+	{ role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'readNote', arguments: { path: '当前.md' } }] },
+	{ role: 'tool', toolCallId: 'call-1', content: '{"path":"当前.md"}' },
+];
+const agentTools: AgentToolDescription[] = [{
+	name: 'readNote',
+	description: '读取笔记',
+	inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+}];
 
 describe('OpenAI protocol', () => {
 	it('uses the complete user-provided API URL without changing it', () => {
@@ -72,5 +85,37 @@ describe('OpenAI protocol', () => {
 			type: 'response.output_text.delta',
 			delta: '{"summary"',
 		})).toBe('{"summary"');
+	});
+
+	it('builds tool calls and tool results for Chat Completions', () => {
+		expect(buildOpenAiAgentBody('chat-completions', 'test-model', agentMessages, agentTools)).toEqual({
+			model: 'test-model',
+			messages: [
+				{ role: 'user', content: '读取当前笔记' },
+				{
+					role: 'assistant',
+					content: null,
+					tool_calls: [{
+						id: 'call-1',
+						type: 'function',
+						function: { name: 'readNote', arguments: '{"path":"当前.md"}' },
+					}],
+				},
+				{ role: 'tool', tool_call_id: 'call-1', content: '{"path":"当前.md"}' },
+			],
+			tools: [{ type: 'function', function: { name: 'readNote', description: '读取笔记', parameters: agentTools[0]!.inputSchema } }],
+			temperature: 0.2,
+		});
+	});
+
+	it('parses tool calls from Chat Completions and Responses', () => {
+		expect(readOpenAiAgentTurn('chat-completions', {
+			choices: [{ message: { content: '', tool_calls: [{
+				id: 'call-1', type: 'function', function: { name: 'readNote', arguments: '{"path":"当前.md"}' },
+			}] } }],
+		})).toEqual({ content: '', toolCalls: [{ id: 'call-1', name: 'readNote', arguments: { path: '当前.md' } }] });
+		expect(readOpenAiAgentTurn('responses', {
+			output: [{ type: 'function_call', call_id: 'call-2', name: 'readNote', arguments: '{"path":"当前.md"}' }],
+		})).toEqual({ content: '', toolCalls: [{ id: 'call-2', name: 'readNote', arguments: { path: '当前.md' } }] });
 	});
 });

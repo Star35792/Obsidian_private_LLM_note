@@ -1,4 +1,5 @@
 import { App, TFile } from 'obsidian';
+import type { VaultNoteRef, VaultReadPort } from '../agent/vault-tools';
 import {
 	commitChangePreview,
 	contentRevision,
@@ -6,7 +7,7 @@ import {
 	type NoteSnapshot,
 } from '../changes/change-plan';
 
-export class ObsidianVaultAdapter {
+export class ObsidianVaultAdapter implements VaultReadPort {
 	private readonly app: App;
 
 	constructor(app: App) {
@@ -16,6 +17,44 @@ export class ObsidianVaultAdapter {
 	async read(path: string): Promise<NoteSnapshot> {
 		const file = this.getMarkdownFile(path);
 		return { path: file.path, content: await this.app.vault.read(file) };
+	}
+
+	async listNotes(scope?: string): Promise<VaultNoteRef[]> {
+		const normalizedScope = this.validateScope(scope);
+		return this.app.vault.getMarkdownFiles()
+			.filter((file) => !normalizedScope || file.path === normalizedScope || file.path.startsWith(`${normalizedScope}/`))
+			.map((file) => this.toNoteRef(file));
+	}
+
+	async searchNotes(query: string, scope?: string): Promise<VaultNoteRef[]> {
+		const normalizedQuery = query.trim().toLocaleLowerCase();
+		if (!normalizedQuery) throw new Error('搜索内容不能为空');
+		const candidates = await Promise.all((await this.listNotes(scope)).map(async (ref) => {
+			const file = this.getMarkdownFile(ref.path);
+			const content = (await this.app.vault.cachedRead(file)).toLocaleLowerCase();
+			const matches = `${ref.title} ${ref.aliases.join(' ')} ${content}`.includes(normalizedQuery);
+			return matches ? ref : undefined;
+		}));
+		return candidates.filter((ref): ref is VaultNoteRef => ref !== undefined).slice(0, 20);
+	}
+
+	async readNote(path: string): Promise<NoteSnapshot> {
+		return this.read(path);
+	}
+
+	async getLinkContext(path: string, depth: number): Promise<unknown> {
+		const file = this.getMarkdownFile(path);
+		const resolvedLinks = this.app.metadataCache.resolvedLinks;
+		const outgoing = Object.keys(resolvedLinks[file.path] ?? {}).map((targetPath) => this.toNoteRefByPath(targetPath));
+		const incoming = Object.entries(resolvedLinks)
+			.filter(([, targets]) => Object.prototype.hasOwnProperty.call(targets, file.path))
+			.map(([sourcePath]) => this.toNoteRefByPath(sourcePath));
+		return {
+			path: file.path,
+			depth,
+			outgoing: outgoing.filter((ref): ref is VaultNoteRef => ref !== null),
+			incoming: incoming.filter((ref): ref is VaultNoteRef => ref !== null),
+		};
 	}
 
 	async update(preview: ChangePreview): Promise<NoteSnapshot> {
@@ -42,5 +81,27 @@ export class ObsidianVaultAdapter {
 		const file = this.app.vault.getAbstractFileByPath(path);
 		if (!(file instanceof TFile) || file.extension !== 'md') throw new Error(`找不到 Markdown 笔记：${path}`);
 		return file;
+	}
+
+	private validateScope(scope?: string): string | undefined {
+		if (scope === undefined || scope.trim() === '') return undefined;
+		const normalized = scope.trim();
+		if (normalized.startsWith('/') || normalized.includes('\\') || normalized.split('/').some((part) => part === '..')) {
+			throw new Error('Vault 范围必须是相对路径');
+		}
+		return normalized.replace(/\/$/, '');
+	}
+
+	private toNoteRef(file: TFile): VaultNoteRef {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const frontmatter = cache?.frontmatter;
+		const rawAliases: unknown = frontmatter?.aliases ?? frontmatter?.alias ?? [];
+		const aliases = Array.isArray(rawAliases) ? rawAliases.filter((value): value is string => typeof value === 'string') : typeof rawAliases === 'string' ? [rawAliases] : [];
+		return { path: file.path, title: file.basename, aliases };
+	}
+
+	private toNoteRefByPath(path: string): VaultNoteRef | null {
+		const file = this.app.vault.getAbstractFileByPath(path);
+		return file instanceof TFile && file.extension === 'md' ? this.toNoteRef(file) : null;
 	}
 }

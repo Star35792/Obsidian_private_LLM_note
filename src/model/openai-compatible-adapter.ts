@@ -1,9 +1,16 @@
 import { requestUrl } from 'obsidian';
+import type { AgentMessage, AgentModelPort, AgentToolDescription, AgentTurn } from '../agent/agent-loop';
 import type { AiNoteAssistantSettings } from '../settings';
 import type { ModelCompletionOptions, ModelPort, ModelRequest, ModelResponse } from './model-port';
-import { buildOpenAiRequest, readOpenAiContent, readOpenAiStreamDelta } from './openai-protocol';
+import {
+	buildOpenAiAgentBody,
+	buildOpenAiRequest,
+	readOpenAiAgentTurn,
+	readOpenAiContent,
+	readOpenAiStreamDelta,
+} from './openai-protocol';
 
-export class OpenAiCompatibleAdapter implements ModelPort {
+export class OpenAiCompatibleAdapter implements ModelPort, AgentModelPort {
 	private readonly getSettings: () => AiNoteAssistantSettings;
 
 	constructor(getSettings: () => AiNoteAssistantSettings) {
@@ -25,6 +32,23 @@ export class OpenAiCompatibleAdapter implements ModelPort {
 			}
 		}
 		return this.completeNonStreaming(request, settings);
+	}
+
+	async completeAgent(messages: AgentMessage[], tools: AgentToolDescription[]): Promise<AgentTurn> {
+		const settings = this.getSettings();
+		if (!settings.apiKey.trim()) throw new Error('尚未配置 API key');
+		if (!settings.apiBaseUrl.trim() || !settings.modelName.trim()) throw new Error('模型地址或名称为空');
+		const body = buildOpenAiAgentBody(settings.apiFormat, settings.modelName, messages, tools);
+		const response = await requestUrl({
+			url: settings.apiBaseUrl,
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${settings.apiKey}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify(body),
+		});
+		return readOpenAiAgentTurn(settings.apiFormat, response.json);
 	}
 
 	private async completeNonStreaming(
