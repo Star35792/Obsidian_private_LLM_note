@@ -4,13 +4,14 @@ import {
 	AiNoteAssistantSettings,
 	AssistantSettingTab,
 } from './settings';
-import { AssistantView, VIEW_TYPE_ASSISTANT } from './ui/assistant-view';
+import { AssistantView, VIEW_TYPE_ASSISTANT, type PendingChangeSelection } from './ui/assistant-view';
 import { createAppendChange, buildChangePreview } from './changes/change-plan';
+import { buildHunkSelectionPreview } from './changes/hunk-selection';
 import { NoteAssistant } from './core/note-assistant';
 import { OpenAiCompatibleAdapter } from './model/openai-compatible-adapter';
 import { ObsidianVaultAdapter } from './obsidian/vault-adapter';
 import { confirmAgentStart, confirmLinkSend, confirmRemoteSend, showChangePreview } from './ui/modals';
-import { AgentLoop, type AgentMessage, type AgentToolCall } from './agent/agent-loop';
+import { AgentLoop, type AgentMessage, type AgentToolCall, type PendingChangePlan } from './agent/agent-loop';
 import { createVaultReadTools } from './agent/vault-tools';
 import { createVaultMutationTools } from './agent/vault-mutation-tools';
 import { buildSkillPrompt, createSkillTools, loadSkills } from './agent/skills';
@@ -263,11 +264,14 @@ export default class AiNoteAssistantPlugin extends Plugin {
 			await this.sessionRuntime.commit(result.messages);
 			view.setConversation(result.messages);
 			if (result.pendingChangePlan) {
+				const plan = result.pendingChangePlan;
 				view.addProcessStep('写工具已转换为待确认预览');
-				view.showPendingChangePlan(result.pendingChangePlan, async () => {
-					await result.pendingChangePlan?.apply?.();
-					new Notice('已按确认计划写回笔记。');
-					view.setStatus('写回完成。');
+				view.showPendingChangePlan(plan, async (selections) => {
+					const written = await this.applyPendingSelection(plan, selections);
+					new Notice(written === undefined ? '已按确认计划写回笔记。' : `已写回选中的 ${written} 处变更。`);
+					view.setStatus(written === undefined
+						? '写回完成。'
+						: `写回完成：只写回了选中的 ${written} 处变更，其余保持原文；需要写回其余变更请重新生成预览。`);
 				});
 				view.setStatus('已生成写回预览，请确认变更。');
 				return;
@@ -279,6 +283,31 @@ export default class AiNoteAssistantPlugin extends Plugin {
 			new Notice(`对话失败：${message}`);
 			view.setStatus(`对话失败：${message}`);
 		}
+	}
+
+	/**
+	 * 全部勾选时沿用计划自带的写回；只勾选一部分时按选中的 hunk 重建预览，
+	 * 因此部分写回同样要通过内容哈希校验。返回实际写回的变更处数，整体写回返回 undefined。
+	 */
+	private async applyPendingSelection(
+		plan: PendingChangePlan,
+		selections: PendingChangeSelection[],
+	): Promise<number | undefined> {
+		const partial = selections.some((selection) => selection.selectedHunks.length < selection.totalHunks);
+		if (!partial) {
+			await plan.apply?.();
+			return undefined;
+		}
+		let written = 0;
+		for (const selection of selections) {
+			if (selection.selectedHunks.length === 0) continue;
+			if (!selection.change.applyPreview) throw new Error('这处变更不支持逐处写回，请取消后整体确认。');
+			await selection.change.applyPreview(
+				buildHunkSelectionPreview(selection.preview, selection.diff, selection.selectedHunks),
+			);
+			written += selection.selectedHunks.length;
+		}
+		return written;
 	}
 
 	private async startNewSession(): Promise<void> {

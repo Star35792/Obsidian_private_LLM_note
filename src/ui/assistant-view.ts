@@ -1,5 +1,5 @@
 import { ItemView, MarkdownView, WorkspaceLeaf } from 'obsidian';
-import { renderTextDiff } from './diff-view';
+import { renderSelectableTextDiff, renderTextDiff } from './diff-view';
 import {
 	CONFIDENCE_LABELS,
 	RELATION_LABELS,
@@ -7,9 +7,20 @@ import {
 	type LinkSuggestionResult,
 } from '../links/link-suggestion';
 import type AiNoteAssistantPlugin from '../main';
-import type { AgentMessage, PendingChangePlan } from '../agent/agent-loop';
+import type { AgentMessage, PendingChangePlan, PlannedChange } from '../agent/agent-loop';
+import type { ChangePreview } from '../changes/change-plan';
+import type { TextDiff } from '../changes/text-diff';
 
 export const VIEW_TYPE_ASSISTANT = 'ai-note-assistant-view';
+
+/** 一处变更中用户实际勾选要写回的 hunk；`selectedHunks` 为空表示这处不写回。 */
+export interface PendingChangeSelection {
+	change: PlannedChange;
+	preview: ChangePreview;
+	diff: TextDiff;
+	selectedHunks: number[];
+	totalHunks: number;
+}
 
 export type AssistantMode = 'capture' | 'organize' | 'clarify' | 'challenge' | 'actionize' | 'related';
 
@@ -105,19 +116,41 @@ export class AssistantView extends ItemView {
 		this.renderConversation();
 	}
 
-	showPendingChangePlan(plan: PendingChangePlan, onConfirm: () => Promise<void>): void {
+	showPendingChangePlan(plan: PendingChangePlan, onConfirm: (selections: PendingChangeSelection[]) => Promise<void>): void {
 		if (!this.pendingEl) return;
 		this.pendingEl.empty();
 		this.pendingEl.addClass('ai-note-assistant-change-card');
 		this.pendingEl.createEl('strong', { text: plan.summary });
+		// 逐处勾选要求每处变更都带预览和自己的写回方式，否则退回整体确认。
+		const perHunk = plan.changes.length > 0
+			&& plan.changes.every((change) => change.preview !== undefined && change.applyPreview !== undefined);
+		const entries: Array<{ change: PlannedChange; preview: ChangePreview; diff: TextDiff }> = [];
+		const selected = new Map<PlannedChange, number[]>();
+		let updateConfirm = (): void => {};
+
 		for (const change of plan.changes) {
 			const item = this.pendingEl.createDiv({ cls: 'ai-note-assistant-change-item' });
 			item.createDiv({ text: change.summary });
-			if (change.preview) {
-				item.createDiv({ text: change.preview.reason, cls: 'ai-note-assistant-change-reason' });
-				renderTextDiff(item, change.preview.originalContent, change.preview.proposedContent);
+			const preview = change.preview;
+			if (!preview) continue;
+			item.createDiv({ text: preview.reason, cls: 'ai-note-assistant-change-reason' });
+			if (!perHunk) {
+				renderTextDiff(item, preview.originalContent, preview.proposedContent);
+				continue;
+			}
+			const handle = renderSelectableTextDiff(item, preview.originalContent, preview.proposedContent, {
+				onChange: (hunks) => {
+					selected.set(change, hunks);
+					updateConfirm();
+				},
+			});
+			if (handle.selectable) {
+				entries.push({ change, preview, diff: handle.diff });
+				selected.set(change, handle.selected());
 			}
 		}
+
+		const selectable = perHunk && entries.length === plan.changes.length;
 		const actions = this.pendingEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
 		const cancel = actions.createEl('button', { text: '取消' });
 		cancel.type = 'button';
@@ -127,15 +160,34 @@ export class AssistantView extends ItemView {
 		});
 		const confirm = actions.createEl('button', { text: '确认写回', cls: 'mod-cta' });
 		confirm.type = 'button';
+		const countSelected = (): number => entries
+			.reduce((total, entry) => total + (selected.get(entry.change)?.length ?? 0), 0);
+		updateConfirm = () => {
+			if (!selectable) return;
+			const count = countSelected();
+			confirm.setText(count === 0 ? '未选择任何变更' : `确认写回选中的 ${count} 处变更`);
+			confirm.disabled = count === 0 || !plan.apply;
+		};
 		confirm.disabled = !plan.apply;
+		updateConfirm();
 		confirm.addEventListener('click', () => {
 			confirm.disabled = true;
 			cancel.disabled = true;
-			void onConfirm().then(() => this.pendingEl?.empty()).catch((error: unknown) => {
+			const selections: PendingChangeSelection[] = selectable
+				? entries.map((entry) => ({
+					change: entry.change,
+					preview: entry.preview,
+					diff: entry.diff,
+					selectedHunks: selected.get(entry.change) ?? [],
+					totalHunks: entry.diff.hunks.length,
+				}))
+				: [];
+			void onConfirm(selections).then(() => this.pendingEl?.empty()).catch((error: unknown) => {
 				const message = error instanceof Error ? error.message : '未知错误';
 				this.setStatus(`写回失败：${message}`);
-				confirm.disabled = false;
 				cancel.disabled = false;
+				updateConfirm();
+				if (!selectable) confirm.disabled = false;
 			});
 		});
 	}

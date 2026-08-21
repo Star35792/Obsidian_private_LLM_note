@@ -150,6 +150,17 @@
 	padding: 2px 6px;
 }
 
+.ai-note-assistant-diff-toggle {
+	align-items: center;
+	cursor: pointer;
+	display: flex;
+	gap: 6px;
+}
+
+.ai-note-assistant-diff-toggle input {
+	margin: 0;
+}
+
 .ai-note-assistant-diff-line {
 	min-height: 1.4em;
 	padding: 0 6px;

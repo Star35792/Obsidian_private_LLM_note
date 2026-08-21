@@ -46,6 +46,11 @@ export interface PlannedChange {
 	id: string;
 	summary: string;
 	preview?: import('../changes/change-plan').ChangePreview;
+	/**
+	 * 只写回预览中的一部分变更时使用：由生成计划的工具提供写入方式，
+	 * 因此部分写回和整体写回走同一条带版本校验的路径。
+	 */
+	applyPreview?: (preview: import('../changes/change-plan').ChangePreview) => Promise<void>;
 }
 
 export interface MutationAgentTool extends AgentToolDescription {

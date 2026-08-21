@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createVaultMutationTools, type VaultMutationPort } from '../src/agent/vault-mutation-tools';
+import { buildTextDiff } from '../src/changes/text-diff';
+import { buildHunkSelectionPreview } from '../src/changes/hunk-selection';
+import type { ChangePreview } from '../src/changes/change-plan';
 
 describe('Vault mutation tools', () => {
 	it('plans a version-checked replacement and applies only after confirmation', async () => {
@@ -57,5 +60,28 @@ describe('Vault mutation tools', () => {
 		expect(tool).toBeDefined();
 
 		await expect(tool!.plan({ path: '想法.md', old_string: '旧段落', new_string: '新段落' })).rejects.toThrow('匹配到 2 处');
+	});
+
+	it('writes back only the selected hunk through the same version-checked path', async () => {
+		const updates: ChangePreview[] = [];
+		const lines = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行`);
+		const source = { path: '想法.md', content: lines.join('\n') };
+		const vault: VaultMutationPort = {
+			listNotes: async () => [], searchNotes: async () => [], readNote: async () => source,
+			getLinkContext: async () => ({}), update: async (preview) => { updates.push(preview); return { path: preview.path, content: preview.proposedContent }; },
+		};
+		const tool = createVaultMutationTools(vault)[0]!;
+		const proposed = lines.map((line, index) => (index === 1 ? '开头改写' : index === 27 ? '结尾改写' : line)).join('\n');
+
+		const plan = await tool.plan({ path: '想法.md', content: proposed });
+		const change = plan.changes[0]!;
+		const diff = buildTextDiff(source.content, proposed);
+		await change.applyPreview?.(buildHunkSelectionPreview(change.preview!, diff, [0]));
+
+		expect(change.applyPreview).toBeDefined();
+		expect(updates).toHaveLength(1);
+		expect(updates[0]?.expectedRevision).toBe(change.preview?.expectedRevision);
+		expect(updates[0]?.proposedContent.split('\n')[1]).toBe('开头改写');
+		expect(updates[0]?.proposedContent.split('\n')[27]).toBe('第 28 行');
 	});
 });

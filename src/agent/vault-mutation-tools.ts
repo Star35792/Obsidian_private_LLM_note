@@ -40,6 +40,7 @@ export function createVaultMutationTools(vault: VaultMutationPort): MutationAgen
 					id: preview.id,
 					summary: `${source.path}：校验版本后替换笔记内容`,
 					preview,
+					applyPreview: async (selected) => { await vault.update(selected); },
 				}],
 				apply: async () => { await vault.update(preview); },
 			};
@@ -73,6 +74,7 @@ export function createVaultMutationTools(vault: VaultMutationPort): MutationAgen
 					id: preview.id,
 					summary: `${source.path}：校验版本后替换指定文本`,
 					preview,
+					applyPreview: async (selected) => { await vault.update(selected); },
 				}],
 				apply: async () => { await vault.update(preview); },
 			};
