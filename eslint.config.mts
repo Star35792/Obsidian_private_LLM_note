@@ -16,6 +16,7 @@ export default defineConfig(
 		'vitest.config.ts',
 		'scripts',
 		'dev-vault',
+		'kimi-code-main',
 		'obsidian-sample-plugin-master',
 		'Obsidian',
 	]),
