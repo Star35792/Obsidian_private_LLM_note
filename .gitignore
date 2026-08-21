@@ -4,14 +4,22 @@
 # Local copy of the official sample plugin
 /obsidian-sample-plugin-master/
 
+# Local read-only reference repository
+/kimi-code-main/
+
+# Local code index and root-level Obsidian workspace
+/.codegraph/
+/.obsidian/
+
 # Dependencies and build output
 node_modules/
 main.js
 *.map
 data.json
 
-# Development vault build output
+# Development vault build output and local workspace state
 dev-vault/.obsidian/plugins/ai-note-assistant/
+dev-vault/.obsidian/workspace.json
 
 # Editor and OS files
 .vscode/
