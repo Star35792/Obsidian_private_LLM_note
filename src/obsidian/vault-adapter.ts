@@ -6,6 +6,12 @@ import type {
 	VaultSearchResult,
 } from '../agent/vault-tools';
 import {
+	collectLinkContext,
+	DEFAULT_LINK_CANDIDATE_LIMIT,
+	type LinkContextResult,
+	type LinkNote,
+} from '../links/link-context';
+import {
 	commitChangePreview,
 	contentRevision,
 	type ChangePreview,
@@ -14,9 +20,11 @@ import {
 
 export class ObsidianVaultAdapter implements VaultReadPort {
 	private readonly app: App;
+	private readonly candidateLimit: () => number;
 
-	constructor(app: App) {
+	constructor(app: App, candidateLimit: () => number = () => DEFAULT_LINK_CANDIDATE_LIMIT) {
 		this.app = app;
+		this.candidateLimit = candidateLimit;
 	}
 
 	async read(path: string): Promise<NoteSnapshot> {
@@ -48,19 +56,20 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 		return this.read(path);
 	}
 
-	async getLinkContext(path: string, depth: number): Promise<unknown> {
+	async getLinkContext(path: string, depth: number): Promise<LinkContextResult> {
 		const file = this.getMarkdownFile(path);
-		const resolvedLinks = this.app.metadataCache.resolvedLinks;
-		const outgoing = Object.keys(resolvedLinks[file.path] ?? {}).map((targetPath) => this.toNoteRefByPath(targetPath));
-		const incoming = Object.entries(resolvedLinks)
-			.filter(([, targets]) => Object.prototype.hasOwnProperty.call(targets, file.path))
-			.map(([sourcePath]) => this.toNoteRefByPath(sourcePath));
-		return {
-			path: file.path,
+		const limit = this.candidateLimit();
+		return collectLinkContext({
+			source: this.toLinkNote(file),
+			sourceContent: await this.app.vault.cachedRead(file),
+			notes: this.app.vault.getMarkdownFiles().map((candidate) => this.toLinkNote(candidate)),
+			links: this.resolvedLinks(),
+			unresolvedFromSource: Object.keys(this.app.metadataCache.unresolvedLinks[file.path] ?? {}),
+			keywordHits: [],
+		}, {
 			depth,
-			outgoing: outgoing.filter((ref): ref is VaultNoteRef => ref !== null),
-			incoming: incoming.filter((ref): ref is VaultNoteRef => ref !== null),
-		};
+			limit: Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LINK_CANDIDATE_LIMIT,
+		});
 	}
 
 	async update(preview: ChangePreview): Promise<NoteSnapshot> {
@@ -111,8 +120,26 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 		return { path: file.path, title: file.basename, aliases };
 	}
 
-	private toNoteRefByPath(path: string): VaultNoteRef | null {
-		const file = this.app.vault.getAbstractFileByPath(path);
-		return file instanceof TFile && file.extension === 'md' ? this.toNoteRef(file) : null;
+	private toLinkNote(file: TFile): LinkNote {
+		return { ...this.toNoteRef(file), tags: this.collectTags(file) };
+	}
+
+	/** Merges inline `#tag` occurrences with frontmatter tags into one `#tag` list. */
+	private collectTags(file: TFile): string[] {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const inline = (cache?.tags ?? []).map((entry) => entry.tag);
+		const rawFrontmatter: unknown = cache?.frontmatter?.tags ?? cache?.frontmatter?.tag ?? [];
+		const frontmatter = (Array.isArray(rawFrontmatter) ? rawFrontmatter : [rawFrontmatter])
+			.filter((value): value is string => typeof value === 'string');
+		const tags = [...inline, ...frontmatter]
+			.map((tag) => tag.trim())
+			.filter(Boolean)
+			.map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
+		return [...new Set(tags)];
+	}
+
+	private resolvedLinks(): Record<string, string[]> {
+		return Object.fromEntries(Object.entries(this.app.metadataCache.resolvedLinks)
+			.map(([from, targets]) => [from, Object.keys(targets)]));
 	}
 }

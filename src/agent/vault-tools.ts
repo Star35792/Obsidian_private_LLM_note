@@ -190,7 +190,7 @@ export function createVaultReadTools(vault: VaultReadPort): ReadOnlyAgentTool[] 
 		{
 			kind: 'read-only',
 			name: 'getLinkContext',
-			description: '读取一篇笔记的出链、反向链接和本地关联上下文。',
+			description: '读取一篇笔记的出链、反向链接和本地关联候选。候选来自本地元数据（未加链接的原文提及、反向链接、共享标签，depth 为 2 时还包括共同邻居），每条带 signals 与建议链接文本；源笔记已经链接过的目标不会出现，同名候选会标注 ambiguous 并给出全部路径。',
 			inputSchema: {
 				type: 'object',
 				required: ['path'],

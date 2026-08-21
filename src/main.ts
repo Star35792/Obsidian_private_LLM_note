@@ -31,7 +31,7 @@ export default class AiNoteAssistantPlugin extends Plugin {
 		await this.loadSettings();
 		this.sessionRuntime = new SessionRuntime(this.pluginData);
 		await this.sessionRuntime.open();
-		this.vaultAdapter = new ObsidianVaultAdapter(this.app);
+		this.vaultAdapter = new ObsidianVaultAdapter(this.app, () => this.settings.localCandidateLimit);
 		this.agentModel = new OpenAiCompatibleAdapter(() => this.settings);
 		this.assistant = new NoteAssistant(this.agentModel);
 		this.registerView(VIEW_TYPE_ASSISTANT, (leaf) => new AssistantView(leaf, this));
