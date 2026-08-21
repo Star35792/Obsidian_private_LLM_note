@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createVaultReadTools, type VaultReadPort } from '../src/agent/vault-tools';
+import { createVaultReadTools, findSearchMatches, type VaultReadPort } from '../src/agent/vault-tools';
 
 describe('Vault read tools', () => {
 	it('exposes only bounded read operations and forwards validated arguments', async () => {
@@ -35,5 +35,21 @@ describe('Vault read tools', () => {
 		await expect(tools[0]!.execute({ scope: '../secret' })).rejects.toThrow('相对路径');
 		await expect(tools[2]!.execute({ path: '../secret.md' })).rejects.toThrow('Vault 内');
 		await expect(tools[3]!.execute({ path: 'x.md', depth: 3 })).rejects.toThrow('depth');
+	});
+
+	it('returns at most three bounded search excerpts instead of whole notes', () => {
+		const longLine = `关键词${'x'.repeat(300)}`;
+		const matches = findSearchMatches([
+			'无关内容',
+			'第一处关键词',
+			longLine,
+			'第三处关键词',
+			'第四处关键词不会返回',
+		].join('\n'), '关键词');
+
+		expect(matches).toHaveLength(3);
+		expect(matches.map((match) => match.line)).toEqual([2, 3, 4]);
+		expect(matches[1]!.excerpt).toHaveLength(240);
+		expect(matches[1]!.excerpt.endsWith('…')).toBe(true);
 	});
 });

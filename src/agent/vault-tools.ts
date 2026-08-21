@@ -11,9 +11,30 @@ export interface VaultNoteSnapshot {
 	content: string;
 }
 
+export interface VaultSearchMatch {
+	line: number;
+	excerpt: string;
+}
+
+export interface VaultSearchResult extends VaultNoteRef {
+	matches: VaultSearchMatch[];
+}
+
+export function findSearchMatches(content: string, query: string): VaultSearchMatch[] {
+	const normalizedQuery = query.trim().toLocaleLowerCase();
+	if (!normalizedQuery) return [];
+	const matches: VaultSearchMatch[] = [];
+	for (const [index, line] of content.split(/\r?\n/).entries()) {
+		if (!line.toLocaleLowerCase().includes(normalizedQuery)) continue;
+		matches.push({ line: index + 1, excerpt: truncateExcerpt(line.trim()) });
+		if (matches.length === 3) break;
+	}
+	return matches;
+}
+
 export interface VaultReadPort {
 	listNotes(scope?: string): Promise<VaultNoteRef[]>;
-	searchNotes(query: string, scope?: string): Promise<VaultNoteRef[]>;
+	searchNotes(query: string, scope?: string): Promise<VaultSearchResult[]>;
 	readNote(path: string): Promise<VaultNoteSnapshot>;
 	getLinkContext(path: string, depth: number): Promise<unknown>;
 }
@@ -33,7 +54,7 @@ export function createVaultReadTools(vault: VaultReadPort): ReadOnlyAgentTool[] 
 		{
 			kind: 'read-only',
 			name: 'searchNotes',
-			description: '按标题、别名或内容搜索少量相关笔记。',
+			description: '按标题、别名或正文搜索相关笔记，返回少量命中行片段。仅需定位信息时优先使用，不必读取全文。',
 			inputSchema: {
 				type: 'object',
 				required: ['query'],
@@ -47,7 +68,7 @@ export function createVaultReadTools(vault: VaultReadPort): ReadOnlyAgentTool[] 
 		{
 			kind: 'read-only',
 			name: 'readNote',
-			description: '读取一篇 Vault 内的 Markdown 笔记。',
+			description: '读取一篇 Vault 内 Markdown 笔记的完整正文。仅在任务确实需要理解全文或准备编辑时调用。',
 			inputSchema: {
 				type: 'object',
 				required: ['path'],
@@ -115,4 +136,8 @@ function readDepth(arguments_: unknown): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function truncateExcerpt(value: string): string {
+	return value.length > 240 ? `${value.slice(0, 239)}…` : value;
 }

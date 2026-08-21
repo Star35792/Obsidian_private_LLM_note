@@ -5,6 +5,7 @@ import {
 	commitChangePreview,
 	contentRevision,
 	createAppendChange,
+	createExactReplaceChanges,
 	createReplaceChange,
 } from '../src/changes/change-plan';
 
@@ -39,5 +40,11 @@ describe('ChangePlan', () => {
 			createReplaceChange('abcdef', 1, 4, 'x'),
 			createReplaceChange('abcdef', 3, 5, 'y'),
 		])).toThrow('变更范围重叠');
+	});
+
+	it('requires a unique exact match unless replacing every occurrence', () => {
+		expect(() => createExactReplaceChanges('原文\n原文', '原文', '新文')).toThrow('匹配到 2 处');
+		expect(applyTextChanges('原文\n原文', createExactReplaceChanges('原文\n原文', '原文', '新文', true)))
+			.toBe('新文\n新文');
 	});
 });

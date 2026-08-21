@@ -1,5 +1,10 @@
 import { App, TFile } from 'obsidian';
-import type { VaultNoteRef, VaultReadPort } from '../agent/vault-tools';
+import { findSearchMatches } from '../agent/vault-tools';
+import type {
+	VaultNoteRef,
+	VaultReadPort,
+	VaultSearchResult,
+} from '../agent/vault-tools';
 import {
 	commitChangePreview,
 	contentRevision,
@@ -26,16 +31,17 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 			.map((file) => this.toNoteRef(file));
 	}
 
-	async searchNotes(query: string, scope?: string): Promise<VaultNoteRef[]> {
+	async searchNotes(query: string, scope?: string): Promise<VaultSearchResult[]> {
 		const normalizedQuery = query.trim().toLocaleLowerCase();
 		if (!normalizedQuery) throw new Error('搜索内容不能为空');
 		const candidates = await Promise.all((await this.listNotes(scope)).map(async (ref) => {
 			const file = this.getMarkdownFile(ref.path);
-			const content = (await this.app.vault.cachedRead(file)).toLocaleLowerCase();
-			const matches = `${ref.title} ${ref.aliases.join(' ')} ${content}`.includes(normalizedQuery);
-			return matches ? ref : undefined;
+			const content = await this.app.vault.cachedRead(file);
+			const metadataMatches = `${ref.title} ${ref.aliases.join(' ')}`.toLocaleLowerCase().includes(normalizedQuery);
+			const matches = findSearchMatches(content, normalizedQuery);
+			return metadataMatches || matches.length > 0 ? { ...ref, matches } : undefined;
 		}));
-		return candidates.filter((ref): ref is VaultNoteRef => ref !== undefined).slice(0, 20);
+		return candidates.filter((ref): ref is VaultSearchResult => ref !== undefined).slice(0, 10);
 	}
 
 	async readNote(path: string): Promise<NoteSnapshot> {
@@ -68,6 +74,11 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) throw new Error('请先打开一篇 Markdown 笔记');
 		return this.read(file.path);
+	}
+
+	getActiveNotePath(): string | undefined {
+		const file = this.app.workspace.getActiveFile();
+		return file instanceof TFile && file.extension === 'md' ? file.path : undefined;
 	}
 
 	getRevision(snapshot: NoteSnapshot): string {

@@ -74,21 +74,122 @@
 	word-break: break-word;
 }
 
+.ai-note-assistant-conversation {
+	display: grid;
+	gap: 10px;
+}
+
+.ai-note-assistant-message {
+	border-left: 3px solid var(--background-modifier-border);
+	padding: 8px 10px;
+	white-space: pre-wrap;
+}
+
+.ai-note-assistant-message-user {
+	border-left-color: var(--interactive-accent);
+}
+
+.ai-note-assistant-message strong {
+	display: block;
+	font-size: var(--font-ui-small);
+	margin-bottom: 4px;
+}
+
+.ai-note-assistant-composer {
+	display: grid;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.ai-note-assistant-composer textarea {
+	min-height: 72px;
+	resize: vertical;
+	width: 100%;
+}
+
+.ai-note-assistant-change-card {
+	background: var(--background-secondary);
+	border: 1px solid var(--interactive-accent);
+	padding: 10px;
+}
+
+.ai-note-assistant-change-item {
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 10px;
+	padding-top: 10px;
+}
+
+.ai-note-assistant-change-reason {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	margin-top: 4px;
+}
+
+.ai-note-assistant-diff {
+	margin-top: 8px;
+}
+
+.ai-note-assistant-diff-stats {
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	margin-bottom: 6px;
+}
+
+.ai-note-assistant-diff-hunk {
+	border: 1px solid var(--background-modifier-border);
+	font-family: var(--font-monospace);
+	font-size: var(--font-smallest);
+	margin-bottom: 8px;
+	max-height: 320px;
+	overflow: auto;
+}
+
+.ai-note-assistant-diff-header {
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+	padding: 2px 6px;
+}
+
+.ai-note-assistant-diff-line {
+	min-height: 1.4em;
+	padding: 0 6px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.ai-note-assistant-diff-added {
+	background: rgba(80, 200, 120, 0.16);
+	color: var(--text-normal);
+}
+
+.ai-note-assistant-diff-removed {
+	background: rgba(220, 90, 90, 0.16);
+	color: var(--text-muted);
+	text-decoration: line-through;
+	text-decoration-color: var(--text-faint);
+}
+
+.ai-note-assistant-diff-note {
+	color: var(--text-accent);
+	font-size: var(--font-smallest);
+}
+
+.ai-note-assistant-preview-full summary {
+	color: var(--text-muted);
+	cursor: pointer;
+	font-size: var(--font-small);
+	margin-top: 10px;
+}
+
+.ai-note-assistant-preview-full pre {
+	max-height: 260px;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
 .ai-note-assistant-modal-actions {
 	display: flex;
 	gap: 8px;
 	justify-content: flex-end;
 	margin-top: 16px;
-}
-
-.ai-note-assistant-preview-grid {
-	display: grid;
-	gap: 12px;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.ai-note-assistant-preview-grid pre {
-	max-height: 360px;
-	overflow: auto;
-	white-space: pre-wrap;
 }

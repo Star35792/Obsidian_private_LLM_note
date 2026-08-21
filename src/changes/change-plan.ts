@@ -39,6 +39,27 @@ export function createReplaceChange(content: string, from: number, to: number, t
 	return { from, to, text };
 }
 
+export function createExactReplaceChanges(
+	content: string,
+	oldString: string,
+	newString: string,
+	replaceAll = false,
+): TextChange[] {
+	if (oldString.length === 0) throw new Error('旧文本不能为空');
+	if (oldString === newString) throw new Error('旧文本和新文本不能相同');
+	const changes: TextChange[] = [];
+	let from = content.indexOf(oldString);
+	while (from !== -1) {
+		changes.push(createReplaceChange(content, from, from + oldString.length, newString));
+		from = content.indexOf(oldString, from + oldString.length);
+	}
+	if (changes.length === 0) throw new Error('未找到要替换的旧文本');
+	if (!replaceAll && changes.length !== 1) {
+		throw new Error(`旧文本匹配到 ${changes.length} 处，请提供更多上下文或设置 replace_all`);
+	}
+	return replaceAll ? changes : [changes[0]!];
+}
+
 export function applyTextChanges(content: string, changes: TextChange[]): string {
 	const ordered = [...changes].sort((left, right) => left.from - right.from || left.to - right.to);
 	let previousTo = 0;

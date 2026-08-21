@@ -1,8 +1,13 @@
 import { App, Modal } from 'obsidian';
+import { renderTextDiff } from './diff-view';
 import type { ChangePreview } from '../changes/change-plan';
 
 export function confirmRemoteSend(app: App, path: string, content: string): Promise<boolean> {
 	return new Promise((resolve) => new RemoteSendModal(app, path, content, resolve).open());
+}
+
+export function confirmAgentStart(app: App, path: string | undefined, request: string): Promise<boolean> {
+	return new Promise((resolve) => new AgentStartModal(app, path, request, resolve).open());
 }
 
 export function showChangePreview(
@@ -56,6 +61,50 @@ class RemoteSendModal extends Modal {
 	}
 }
 
+class AgentStartModal extends Modal {
+	private readonly path?: string;
+	private readonly request: string;
+	private readonly resolveChoice: (confirmed: boolean) => void;
+	private resolved = false;
+
+	constructor(app: App, path: string | undefined, request: string, resolveChoice: (confirmed: boolean) => void) {
+		super(app);
+		this.path = path;
+		this.request = request;
+		this.resolveChoice = resolveChoice;
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl('h2', { text: '确认开始远程对话' });
+		this.contentEl.createEl('p', { text: `首轮仅发送用户请求（${this.request.length} 个字符）和活动笔记路径。` });
+		this.contentEl.createEl('p', { text: `活动笔记：${this.path ?? '未打开 Markdown 笔记'}` });
+		this.contentEl.createEl('p', { text: '笔记正文不会自动发送；模型按需调用搜索或读取工具，调用过程会显示在侧栏。' });
+		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
+		this.addButton(actions, '取消', false);
+		this.addButton(actions, '确认开始', true);
+	}
+
+	onClose(): void {
+		this.finish(false);
+		this.contentEl.empty();
+	}
+
+	private addButton(container: HTMLElement, label: string, confirmed: boolean): void {
+		const button = container.createEl('button', { text: label, cls: confirmed ? 'mod-cta' : undefined });
+		button.type = 'button';
+		button.addEventListener('click', () => {
+			this.finish(confirmed);
+			this.close();
+		});
+	}
+
+	private finish(confirmed: boolean): void {
+		if (this.resolved) return;
+		this.resolved = true;
+		this.resolveChoice(confirmed);
+	}
+}
+
 class ChangePreviewModal extends Modal {
 	private readonly preview: ChangePreview;
 	private readonly applyChanges: () => Promise<void>;
@@ -69,13 +118,10 @@ class ChangePreviewModal extends Modal {
 	onOpen(): void {
 		this.contentEl.createEl('h2', { text: '整理结果预览' });
 		this.contentEl.createEl('p', { text: this.preview.reason });
-		const comparison = this.contentEl.createDiv({ cls: 'ai-note-assistant-preview-grid' });
-		const original = comparison.createDiv();
-		original.createEl('h3', { text: '原文' });
-		original.createEl('pre', { text: this.preview.originalContent });
-		const proposed = comparison.createDiv();
-		proposed.createEl('h3', { text: '建议结果' });
-		proposed.createEl('pre', { text: this.preview.proposedContent });
+		renderTextDiff(this.contentEl, this.preview.originalContent, this.preview.proposedContent);
+		const fullResult = this.contentEl.createEl('details', { cls: 'ai-note-assistant-preview-full' });
+		fullResult.createEl('summary', { text: '查看写回后的完整内容' });
+		fullResult.createEl('pre', { text: this.preview.proposedContent });
 
 		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
 		this.addButton(actions, '取消', () => this.close());
