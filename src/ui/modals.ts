@@ -1,9 +1,14 @@
 import { App, Modal } from 'obsidian';
 import { renderTextDiff } from './diff-view';
 import type { ChangePreview } from '../changes/change-plan';
+import type { LinkBrief } from '../links/link-brief';
 
 export function confirmRemoteSend(app: App, path: string, content: string): Promise<boolean> {
 	return new Promise((resolve) => new RemoteSendModal(app, path, content, resolve).open());
+}
+
+export function confirmLinkSend(app: App, path: string, sourceChars: number, briefs: LinkBrief[]): Promise<boolean> {
+	return new Promise((resolve) => new LinkSendModal(app, path, sourceChars, briefs, resolve).open());
 }
 
 export function confirmAgentStart(app: App, path: string | undefined, request: string): Promise<boolean> {
@@ -35,6 +40,63 @@ class RemoteSendModal extends Modal {
 		this.contentEl.createEl('h2', { text: '确认发送笔记内容' });
 		this.contentEl.createEl('p', { text: `将发送给远程模型：${this.path}` });
 		this.contentEl.createEl('p', { text: `本次发送 ${this.content.length} 个字符，仅包含当前笔记内容。` });
+		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
+		this.addButton(actions, '取消', false);
+		this.addButton(actions, '确认发送', true);
+	}
+
+	onClose(): void {
+		this.finish(false);
+		this.contentEl.empty();
+	}
+
+	private addButton(container: HTMLElement, label: string, confirmed: boolean): void {
+		const button = container.createEl('button', { text: label, cls: confirmed ? 'mod-cta' : undefined });
+		button.type = 'button';
+		button.addEventListener('click', () => {
+			this.finish(confirmed);
+			this.close();
+		});
+	}
+
+	private finish(confirmed: boolean): void {
+		if (this.resolved) return;
+		this.resolved = true;
+		this.resolveChoice(confirmed);
+	}
+}
+
+class LinkSendModal extends Modal {
+	private readonly path: string;
+	private readonly sourceChars: number;
+	private readonly briefs: LinkBrief[];
+	private readonly resolveChoice: (confirmed: boolean) => void;
+	private resolved = false;
+
+	constructor(
+		app: App,
+		path: string,
+		sourceChars: number,
+		briefs: LinkBrief[],
+		resolveChoice: (confirmed: boolean) => void,
+	) {
+		super(app);
+		this.path = path;
+		this.sourceChars = sourceChars;
+		this.briefs = briefs;
+		this.resolveChoice = resolveChoice;
+	}
+
+	onOpen(): void {
+		const excerptChars = this.briefs.reduce((total, brief) => total + brief.excerpt.length, 0);
+		this.contentEl.createEl('h2', { text: '确认发送关联判断范围' });
+		this.contentEl.createEl('p', { text: `当前笔记：${this.path}（${this.sourceChars} 个字符，全文）` });
+		this.contentEl.createEl('p', { text: `候选笔记片段：${this.briefs.length} 篇，共 ${excerptChars} 个字符` });
+		const list = this.contentEl.createEl('ul');
+		for (const brief of this.briefs) {
+			list.createEl('li', { text: `${brief.path}（${brief.excerpt.length} 个字符${brief.truncated ? '，仅开头片段' : ''}）` });
+		}
+		this.contentEl.createEl('p', { text: '候选由本地元数据筛选，列表以外的笔记不会发送。' });
 		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
 		this.addButton(actions, '取消', false);
 		this.addButton(actions, '确认发送', true);

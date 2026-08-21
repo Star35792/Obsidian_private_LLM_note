@@ -9,13 +9,15 @@ import { createAppendChange, buildChangePreview } from './changes/change-plan';
 import { NoteAssistant } from './core/note-assistant';
 import { OpenAiCompatibleAdapter } from './model/openai-compatible-adapter';
 import { ObsidianVaultAdapter } from './obsidian/vault-adapter';
-import { confirmAgentStart, confirmRemoteSend, showChangePreview } from './ui/modals';
+import { confirmAgentStart, confirmLinkSend, confirmRemoteSend, showChangePreview } from './ui/modals';
 import { AgentLoop, type AgentMessage, type AgentToolCall } from './agent/agent-loop';
 import { createVaultReadTools } from './agent/vault-tools';
 import { createVaultMutationTools } from './agent/vault-mutation-tools';
 import { buildSkillPrompt, createSkillTools, loadSkills } from './agent/skills';
 import { SessionRuntime } from './agent/session-runtime';
 import { PluginDataStore } from './obsidian/plugin-data-store';
+import { buildLinkBriefs, DEFAULT_MODEL_CANDIDATE_LIMIT } from './links/link-brief';
+import { buildLinkSuggestionPreview, DEFAULT_SUGGESTION_LIMIT } from './links/link-suggestion';
 
 export default class AiNoteAssistantPlugin extends Plugin {
 	settings!: AiNoteAssistantSettings;
@@ -26,6 +28,7 @@ export default class AiNoteAssistantPlugin extends Plugin {
 	private sessionRuntime!: SessionRuntime;
 	private remoteConfirmedThisSession = false;
 	private agentConfirmedThisSession = false;
+	private linkConfirmedThisSession = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -85,71 +88,132 @@ export default class AiNoteAssistantPlugin extends Plugin {
 	}
 
 	async runMode(mode: AssistantView['mode']): Promise<void> {
-		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
-		if (view instanceof AssistantView) {
-			view.beginProcess();
-			view.setStatus('正在读取当前笔记…');
-		}
-		if (mode !== 'organize') {
-			new Notice('该动作将在后续切片中启用。当前可用动作是“整理”。');
-			if (view instanceof AssistantView) view.setStatus('当前可用动作是“整理”。');
+		const view = this.getAssistantView();
+		view?.beginProcess();
+		if (mode !== 'organize' && mode !== 'related') {
+			new Notice('该动作将在后续切片中启用。当前可用动作是“整理”和“寻找关联”。');
+			view?.setStatus('当前可用动作是“整理”和“寻找关联”。');
 			return;
 		}
+		const label = mode === 'organize' ? '整理' : '寻找关联';
+		view?.setStatus('正在读取当前笔记…');
 		if (!this.settings.remoteModelEnabled) {
 			new Notice('请先在设置中开启远程模型。');
-			if (view instanceof AssistantView) view.setStatus('远程模型已关闭，未发送任何内容。');
+			view?.setStatus('远程模型已关闭，未发送任何内容。');
 			return;
 		}
 
 		try {
-			const source = await this.vaultAdapter.readActive();
-			if (view instanceof AssistantView) view.addProcessStep(`已读取 ${source.path}（${source.content.length} 个字符）`);
-			if (!this.remoteConfirmedThisSession) {
-				if (view instanceof AssistantView) view.addProcessStep('等待确认本次发送范围');
-				const confirmed = await confirmRemoteSend(this.app, source.path, source.content);
-				if (!confirmed) {
-					if (view instanceof AssistantView) view.setStatus('已取消发送，原笔记未改变。');
-					return;
-				}
-				this.remoteConfirmedThisSession = true;
-				if (view instanceof AssistantView) view.addProcessStep('用户已确认发送当前笔记内容');
-			}
-			if (view instanceof AssistantView) {
-				view.addProcessStep(`正在请求 ${this.settings.modelName}`);
-				view.setStatus('模型正在生成结构化草稿…');
-			}
-			const result = await this.assistant.organize(
-				{ content: source.content },
-				{ onDelta: (delta) => view instanceof AssistantView && view.appendStreamDelta(delta) },
-			);
-			if (view instanceof AssistantView) {
-				view.addProcessStep(result.streamed ? '流式输出接收完成' : '流式连接不可用，已完成普通响应');
-				view.addProcessStep('结构化结果校验通过');
-			}
-			const preview = buildChangePreview(
-				source,
-				[createAppendChange(source.content, `\n\n${result.markdown}`)],
-				'整理结果默认追加到笔记末尾，原文保留。',
-			);
-			showChangePreview(this.app, preview, async () => {
-				await this.vaultAdapter.update(preview);
-				new Notice('整理结果已追加到当前笔记。');
-				if (view instanceof AssistantView) view.setStatus('已写回整理结果。');
-			});
-			if (view instanceof AssistantView) {
-				view.addProcessStep('写回预览已生成，原笔记尚未修改');
-				view.setStatus('已生成预览，请确认写回方式。');
-			}
+			if (mode === 'organize') await this.runOrganize(view);
+			else await this.runRelated(view);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : '未知错误';
-			new Notice(`整理失败：${message}`);
-			if (view instanceof AssistantView) view.setStatus(`整理失败：${message}`);
+			new Notice(`${label}失败：${message}`);
+			view?.setStatus(`${label}失败：${message}`);
 		}
 	}
 
+	private async runOrganize(view?: AssistantView): Promise<void> {
+		const source = await this.vaultAdapter.readActive();
+		view?.addProcessStep(`已读取 ${source.path}（${source.content.length} 个字符）`);
+		if (!this.remoteConfirmedThisSession) {
+			view?.addProcessStep('等待确认本次发送范围');
+			const confirmed = await confirmRemoteSend(this.app, source.path, source.content);
+			if (!confirmed) {
+				view?.setStatus('已取消发送，原笔记未改变。');
+				return;
+			}
+			this.remoteConfirmedThisSession = true;
+			view?.addProcessStep('用户已确认发送当前笔记内容');
+		}
+		view?.addProcessStep(`正在请求 ${this.settings.modelName}`);
+		view?.setStatus('模型正在生成结构化草稿…');
+		const result = await this.assistant.organize(
+			{ content: source.content },
+			{ onDelta: (delta) => view?.appendStreamDelta(delta) },
+		);
+		view?.addProcessStep(result.streamed ? '流式输出接收完成' : '流式连接不可用，已完成普通响应');
+		view?.addProcessStep('结构化结果校验通过');
+		const preview = buildChangePreview(
+			source,
+			[createAppendChange(source.content, `\n\n${result.markdown}`)],
+			'整理结果默认追加到笔记末尾，原文保留。',
+		);
+		showChangePreview(this.app, preview, async () => {
+			await this.vaultAdapter.update(preview);
+			new Notice('整理结果已追加到当前笔记。');
+			view?.setStatus('已写回整理结果。');
+		});
+		view?.addProcessStep('写回预览已生成，原笔记尚未修改');
+		view?.setStatus('已生成预览，请确认写回方式。');
+	}
+
+	/**
+	 * Candidate discovery stays local; only the current note plus a bounded
+	 * excerpt of each candidate is sent, and each returned suggestion is written
+	 * back on its own after the user confirms it.
+	 */
+	private async runRelated(view?: AssistantView): Promise<void> {
+		if (!view) {
+			new Notice('请先打开思维整理侧栏，双链建议需要逐条确认。');
+			return;
+		}
+		const source = await this.vaultAdapter.readActive();
+		view.addProcessStep(`已读取 ${source.path}（${source.content.length} 个字符）`);
+		const context = await this.vaultAdapter.getLinkContext(source.path, 2);
+		view.addProcessStep(`本地候选 ${context.candidates.length} 篇（已跳过 ${context.skippedLinked} 篇已链接笔记）`);
+		if (context.candidates.length === 0) {
+			view.setStatus('本地没有找到关联候选，未发送任何内容。');
+			return;
+		}
+
+		const modelLimit = positiveLimit(this.settings.modelCandidateLimit, DEFAULT_MODEL_CANDIDATE_LIMIT);
+		const selected = context.candidates.slice(0, modelLimit);
+		const inputs = await Promise.all(selected.map(async (candidate) => ({
+			candidate,
+			content: (await this.vaultAdapter.read(candidate.target.path)).content,
+		})));
+		const briefs = buildLinkBriefs(inputs, { limit: modelLimit });
+		view.addProcessStep(`已提取 ${briefs.length} 条候选片段，尚未发送`);
+
+		if (!this.linkConfirmedThisSession) {
+			view.addProcessStep('等待确认本次发送范围');
+			const confirmed = await confirmLinkSend(this.app, source.path, source.content.length, briefs);
+			if (!confirmed) {
+				view.setStatus('已取消发送，未发送任何笔记内容。');
+				return;
+			}
+			this.linkConfirmedThisSession = true;
+			view.addProcessStep('用户已确认发送当前笔记和候选片段');
+		}
+
+		view.addProcessStep(`正在请求 ${this.settings.modelName}`);
+		view.setStatus('模型正在判断关系…');
+		const result = await this.assistant.suggestLinks(
+			{
+				sourceContent: source.content,
+				briefs,
+				limit: positiveLimit(this.settings.suggestionLimit, DEFAULT_SUGGESTION_LIMIT),
+			},
+			{ onDelta: (delta) => view.appendStreamDelta(delta) },
+		);
+		view.addProcessStep(result.streamed ? '流式输出接收完成' : '流式连接不可用，已完成普通响应');
+		view.addProcessStep(`建议校验完成：可写回 ${result.suggestions.length} 条，未采用 ${result.rejected.length} 条`);
+		view.showLinkSuggestions(result, async (suggestion) => {
+			const current = await this.vaultAdapter.read(source.path);
+			const preview = buildLinkSuggestionPreview(current, suggestion);
+			await this.vaultAdapter.update(preview);
+			new Notice(`已加入指向「${suggestion.targetTitle}」的双链。`);
+			view.setStatus(`已写回 [[${suggestion.linkTarget}]]，其余建议仍待确认。`);
+		});
+		view.setStatus(result.suggestions.length === 0
+			? '模型没有给出可写回的双链建议，笔记未改变。'
+			: '已生成双链建议，请逐条确认写回。');
+	}
+
 	async runAgent(userMessage: string): Promise<void> {
-		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
-		if (!(view instanceof AssistantView)) return;
+		const view = this.getAssistantView();
+		if (!view) return;
 		if (!userMessage.trim()) return;
 		view.beginProcess();
 		view.setStatus('正在准备对话…');
@@ -219,13 +283,23 @@ export default class AiNoteAssistantPlugin extends Plugin {
 
 	private async startNewSession(): Promise<void> {
 		await this.sessionRuntime.reset();
-		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
-		if (view instanceof AssistantView) {
+		const view = this.getAssistantView();
+		if (view) {
 			view.setConversation([]);
 			view.setStatus('已新建会话。');
 		}
 		new Notice('已新建助手会话。');
 	}
+
+	private getAssistantView(): AssistantView | undefined {
+		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
+		return view instanceof AssistantView ? view : undefined;
+	}
+}
+
+/** Plugin data can hold anything from an older version, so limits are re-checked before use. */
+function positiveLimit(value: number, fallback: number): number {
+	return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 export type AssistantPlugin = AiNoteAssistantPlugin;

@@ -193,3 +193,15 @@
 	justify-content: flex-end;
 	margin-top: 16px;
 }
+
+.ai-note-assistant-suggestion-evidence {
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	margin-top: 4px;
+}
+
+.ai-note-assistant-suggestion-error {
+	color: var(--text-error);
+	font-size: var(--font-small);
+	margin-top: 6px;
+}

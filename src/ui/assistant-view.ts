@@ -1,5 +1,11 @@
 import { ItemView, MarkdownView, WorkspaceLeaf } from 'obsidian';
 import { renderTextDiff } from './diff-view';
+import {
+	CONFIDENCE_LABELS,
+	RELATION_LABELS,
+	type LinkSuggestion,
+	type LinkSuggestionResult,
+} from '../links/link-suggestion';
 import type AiNoteAssistantPlugin from '../main';
 import type { AgentMessage, PendingChangePlan } from '../agent/agent-loop';
 
@@ -14,6 +20,16 @@ const MODE_LABELS: Record<AssistantMode, string> = {
 	challenge: '挑战',
 	actionize: '行动化',
 	related: '寻找关联',
+};
+
+const RUN_LABELS: Partial<Record<AssistantMode, string>> = {
+	organize: '生成整理预览',
+	related: '生成双链建议',
+};
+
+const MODE_HINTS: Partial<Record<AssistantMode, string>> = {
+	organize: '整理会读取当前笔记，并在发送前显示范围。',
+	related: '寻找关联会先用本地元数据筛候选，再发送当前笔记和候选片段，发送前显示范围。',
 };
 
 export class AssistantView extends ItemView {
@@ -124,6 +140,79 @@ export class AssistantView extends ItemView {
 		});
 	}
 
+	/**
+	 * Every suggestion is confirmed on its own: each accept re-reads the note and
+	 * re-locates the anchor, so accepting one never silently applies another.
+	 */
+	showLinkSuggestions(result: LinkSuggestionResult, onAccept: (suggestion: LinkSuggestion) => Promise<void>): void {
+		if (!this.pendingEl) return;
+		this.pendingEl.empty();
+		this.pendingEl.addClass('ai-note-assistant-change-card');
+		this.pendingEl.createEl('strong', {
+			text: result.suggestions.length === 0
+				? '没有可写回的双链建议。'
+				: `${result.suggestions.length} 条双链建议，逐条确认后写回。`,
+		});
+		if (result.hasMore) {
+			this.pendingEl.createDiv({
+				cls: 'ai-note-assistant-change-reason',
+				text: `模型给出 ${result.total} 条有效建议，按设置只展示前 ${result.suggestions.length} 条。`,
+			});
+		}
+		for (const suggestion of result.suggestions) this.renderLinkSuggestion(suggestion, onAccept);
+		if (result.rejected.length > 0) {
+			const rejected = this.pendingEl.createEl('details', { cls: 'ai-note-assistant-preview-full' });
+			rejected.createEl('summary', { text: `未采用 ${result.rejected.length} 条建议` });
+			for (const item of result.rejected) {
+				rejected.createDiv({ text: `• ${item.targetPath ?? '未知目标'}：${item.reason}` });
+			}
+		}
+		const actions = this.pendingEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
+		const dismiss = actions.createEl('button', { text: '全部忽略' });
+		dismiss.type = 'button';
+		dismiss.addEventListener('click', () => {
+			this.pendingEl?.empty();
+			this.setStatus('已忽略全部双链建议，笔记未改变。');
+		});
+	}
+
+	private renderLinkSuggestion(suggestion: LinkSuggestion, onAccept: (suggestion: LinkSuggestion) => Promise<void>): void {
+		if (!this.pendingEl) return;
+		const item = this.pendingEl.createDiv({ cls: 'ai-note-assistant-change-item' });
+		item.createEl('strong', {
+			text: `指向「${suggestion.targetTitle}」·${RELATION_LABELS[suggestion.relation]}·${CONFIDENCE_LABELS[suggestion.confidence]}`,
+		});
+		item.createDiv({ text: suggestion.reason, cls: 'ai-note-assistant-change-reason' });
+		if (suggestion.evidence) {
+			item.createDiv({ text: `依据：${suggestion.evidence}`, cls: 'ai-note-assistant-suggestion-evidence' });
+		}
+		item.createDiv({
+			text: suggestion.mode === 'wrap' ? '只给原文中的词加链接' : '在原句之后追加一句带链接的说明',
+			cls: 'ai-note-assistant-suggestion-evidence',
+		});
+		renderTextDiff(item, suggestion.anchor, suggestion.anchorWithLink);
+
+		const actions = item.createDiv({ cls: 'ai-note-assistant-modal-actions' });
+		const skip = actions.createEl('button', { text: '忽略这条' });
+		skip.type = 'button';
+		skip.addEventListener('click', () => item.remove());
+		const accept = actions.createEl('button', { text: '接受并写回', cls: 'mod-cta' });
+		accept.type = 'button';
+		accept.addEventListener('click', () => {
+			accept.disabled = true;
+			skip.disabled = true;
+			void onAccept(suggestion).then(() => {
+				actions.remove();
+				item.createDiv({ text: `已写回 [[${suggestion.linkTarget}]]`, cls: 'ai-note-assistant-diff-note' });
+			}).catch((error: unknown) => {
+				const message = error instanceof Error ? error.message : '未知错误';
+				item.createDiv({ text: `写回失败：${message}`, cls: 'ai-note-assistant-suggestion-error' });
+				accept.disabled = false;
+				skip.disabled = false;
+			});
+		});
+	}
+
 	private render(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -158,7 +247,7 @@ export class AssistantView extends ItemView {
 
 		if (this.mode) {
 			const runButton = actionsSection.createEl('button', {
-				text: this.mode === 'organize' ? '生成整理预览' : `运行${MODE_LABELS[this.mode]}`,
+				text: RUN_LABELS[this.mode] ?? `运行${MODE_LABELS[this.mode]}`,
 				cls: 'ai-note-assistant-run mod-cta',
 			});
 			runButton.type = 'button';
@@ -186,11 +275,9 @@ export class AssistantView extends ItemView {
 		this.pendingEl = planSection.createDiv();
 
 		this.statusEl = contentEl.createDiv({ cls: 'ai-note-assistant-status' });
-		this.statusEl.setText(this.mode === 'organize'
-			? '整理会读取当前笔记，并在发送前显示范围。'
-			: this.mode
-				? `${MODE_LABELS[this.mode]}动作将在后续切片中启用。`
-				: '未选择动作。你可以直接在对话中描述任务，动作只是可选的快捷入口。');
+		this.statusEl.setText(this.mode
+			? MODE_HINTS[this.mode] ?? `${MODE_LABELS[this.mode]}动作将在后续切片中启用。`
+			: '未选择动作。你可以直接在对话中描述任务，动作只是可选的快捷入口。');
 
 		const processSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
 		processSection.createEl('h3', { text: '处理过程' });
