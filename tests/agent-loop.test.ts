@@ -53,7 +53,7 @@ describe('AgentLoop', () => {
 		]);
 	});
 
-	it('refreshes runtime context before prior conversation messages on later runs', async () => {
+	it('appends runtime context after prior conversation and before the new request', async () => {
 		const calls: AgentMessage[][] = [];
 		const history: AgentMessage[] = [
 			{ role: 'system', content: '旧提示' },
@@ -66,9 +66,12 @@ describe('AgentLoop', () => {
 
 		await loop.run('继续', history, '当前活动笔记路径：新笔记.md；正文尚未读取。');
 
-		expect(calls[0]!.slice(0, 2)).toEqual([
+		expect(calls[0]).toEqual([
 			{ role: 'system', content: '当前提示' },
+			{ role: 'user', content: '上一轮请求' },
+			{ role: 'assistant', content: '上一轮回答' },
 			{ role: 'system', content: '当前活动笔记路径：新笔记.md；正文尚未读取。' },
+			{ role: 'user', content: '继续' },
 		]);
 		expect(calls[0]).not.toContainEqual({ role: 'system', content: '旧提示' });
 	});
@@ -151,6 +154,94 @@ describe('AgentLoop', () => {
 		expect(calls[1]).toContainEqual({
 			role: 'tool', toolCallId: 'read-1', content: JSON.stringify({ error: '找不到 Markdown 笔记' }),
 		});
+	});
+
+	it('truncates an oversized tool result and states how to retrieve the rest', async () => {
+		const calls: AgentMessage[][] = [];
+		const loop = new AgentLoop(scriptedModel([
+			{ content: '', toolCalls: [{ id: 'read-1', name: 'readNote', arguments: { path: '长笔记.md' } }] },
+			{ content: '我先用前面的内容作答。', toolCalls: [] },
+		], calls), [{
+			kind: 'read-only', name: 'readNote', description: '读取笔记', inputSchema: { type: 'object' },
+			execute: async () => ({ content: '段'.repeat(500) }),
+		}], { toolResultBudget: { maxChars: 200, previewChars: 80 } });
+
+		await loop.run('读取长笔记');
+
+		const toolMessage = calls[1]!.find((message) => message.role === 'tool');
+		expect(toolMessage?.content).toContain('超过单条结果上限 200');
+		expect(toolMessage?.content).toContain('readNote 的 offset 和 limit');
+		expect(toolMessage!.content.length).toBeLessThan(500);
+	});
+
+	it('executes an identical tool call only once within the same step', async () => {
+		const calls: AgentMessage[][] = [];
+		let executions = 0;
+		const loop = new AgentLoop(scriptedModel([
+			{
+				content: '',
+				toolCalls: [
+					{ id: 'search-1', name: 'searchNotes', arguments: { query: '上下文', scope: '项目' } },
+					{ id: 'search-2', name: 'searchNotes', arguments: { scope: '项目', query: '上下文' } },
+				],
+			},
+			{ content: '已经有搜索结果了。', toolCalls: [] },
+		], calls), [{
+			kind: 'read-only', name: 'searchNotes', description: '搜索笔记', inputSchema: { type: 'object' },
+			execute: async () => { executions += 1; return [{ path: '项目/想法.md' }]; },
+		}]);
+
+		await loop.run('查找上下文');
+
+		expect(executions).toBe(1);
+		const toolMessages = calls[1]!.filter((message) => message.role === 'tool');
+		expect(toolMessages.map((message) => message.toolCallId)).toEqual(['search-1', 'search-2']);
+		expect(toolMessages[1]?.content).toBe(toolMessages[0]?.content);
+	});
+
+	it('warns the model when the same tool call repeats across steps', async () => {
+		const calls: AgentMessage[][] = [];
+		const repeated = { id: 'search-1', name: 'searchNotes', arguments: { query: '上下文' } };
+		const loop = new AgentLoop(scriptedModel([
+			{ content: '', toolCalls: [repeated] },
+			{ content: '', toolCalls: [repeated] },
+			{ content: '', toolCalls: [repeated] },
+			{ content: '我用现有结果作答。', toolCalls: [] },
+		], calls), [{
+			kind: 'read-only', name: 'searchNotes', description: '搜索笔记', inputSchema: { type: 'object' },
+			execute: async () => [],
+		}]);
+
+		await loop.run('查找上下文');
+
+		const lastStepToolMessages = calls[3]!.filter((message) => message.role === 'tool');
+		expect(lastStepToolMessages[lastStepToolMessages.length - 1]?.content).toContain('已连续重复 3 次');
+	});
+
+	it('concludes at the turn limit instead of throwing and closes dangling tool calls', async () => {
+		const calls: AgentMessage[][] = [];
+		const loop = new AgentLoop(scriptedModel([
+			{ content: '', toolCalls: [{ id: 'search-1', name: 'searchNotes', arguments: { query: '甲' } }] },
+			{ content: '', toolCalls: [{ id: 'search-2', name: 'searchNotes', arguments: { query: '乙' } }] },
+		], calls), [{
+			kind: 'read-only', name: 'searchNotes', description: '搜索笔记', inputSchema: { type: 'object' },
+			execute: async () => [],
+		}], { maxTurns: 2 });
+
+		const result = await loop.run('查找');
+
+		expect(result.finalContent).toContain('已达到本轮工具调用上限');
+		const finalReminders = calls[1]!.filter((message) => message.role === 'system');
+		expect(finalReminders).toHaveLength(1);
+		expect(finalReminders[0]!.content).toContain('不要再调用任何工具');
+		expect(result.messages.some((message) => message.role === 'system')).toBe(false);
+		const assistantCalls = result.messages
+			.filter((message) => message.role === 'assistant')
+			.flatMap((message) => message.toolCalls ?? []);
+		const answered = new Set(result.messages
+			.filter((message) => message.role === 'tool')
+			.map((message) => message.toolCallId));
+		expect(assistantCalls.every((call) => answered.has(call.id))).toBe(true);
 	});
 
 	it('compacts long history with a recoverable summary and recent messages', async () => {

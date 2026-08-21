@@ -1,3 +1,5 @@
+import { budgetToolResultText, DEFAULT_TOOL_RESULT_BUDGET, type ToolResultBudget } from './tool-result-budget';
+
 export type AgentMessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface AgentMessage {
@@ -62,6 +64,7 @@ export interface AgentLoopOptions {
 	historyLimit?: number;
 	historySummary?: string;
 	systemPrompt?: string;
+	toolResultBudget?: ToolResultBudget;
 	onToolCall?: (call: AgentToolCall) => void;
 }
 
@@ -102,6 +105,7 @@ export class AgentLoop {
 	private readonly historyLimit?: number;
 	private readonly historySummary: string;
 	private readonly systemPrompt: string;
+	private readonly toolResultBudget: ToolResultBudget;
 	private readonly onToolCall?: (call: AgentToolCall) => void;
 
 	constructor(model: AgentModelPort, tools: AgentTool[], options: AgentLoopOptions = {}) {
@@ -111,6 +115,7 @@ export class AgentLoop {
 		this.historyLimit = options.historyLimit;
 		this.historySummary = options.historySummary ?? '';
 		this.systemPrompt = options.systemPrompt?.trim() ?? '';
+		this.toolResultBudget = options.toolResultBudget ?? DEFAULT_TOOL_RESULT_BUDGET;
 		this.onToolCall = options.onToolCall;
 	}
 
@@ -124,59 +129,97 @@ export class AgentLoop {
 			);
 		const messages = compactedHistory;
 		if (this.systemPrompt) messages.unshift({ role: 'system', content: this.systemPrompt });
-		const contextMessage: AgentMessage | undefined = runtimeContext.trim()
-			? { role: 'system', content: runtimeContext.trim() }
-			: undefined;
-		if (contextMessage) messages.splice(this.systemPrompt ? 1 : 0, 0, contextMessage);
+		// Appended at the tail instead of after the system prompt: the runtime
+		// context changes every turn, so putting it in the prefix invalidates the
+		// provider's prompt cache for the whole conversation.
+		const ephemeral: AgentMessage[] = [];
+		if (runtimeContext.trim()) {
+			const contextMessage: AgentMessage = { role: 'system', content: runtimeContext.trim() };
+			messages.push(contextMessage);
+			ephemeral.push(contextMessage);
+		}
 		messages.push({ role: 'user' as const, content: userMessage });
 		const toolsByName = new Map(this.tools.map((tool) => [tool.name, tool]));
 		const descriptions = this.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+		const repeats = new RepeatTracker();
+		let forceFinalStep = false;
 
 		for (let turnIndex = 0; turnIndex < this.maxTurns; turnIndex += 1) {
+			const finalStep = forceFinalStep || turnIndex === this.maxTurns - 1;
+			if (finalStep) {
+				const reminder: AgentMessage = { role: 'system', content: FINAL_STEP_REMINDER };
+				messages.push(reminder);
+				ephemeral.push(reminder);
+			}
 			const turn = await this.model.completeAgent(messages, descriptions);
 			messages.push({ role: 'assistant', content: turn.content, toolCalls: turn.toolCalls });
 			if (turn.toolCalls.length === 0) {
-				return { messages: withoutRuntimeContext(messages, contextMessage), finalContent: turn.content };
+				return { messages: withoutEphemeral(messages, ephemeral), finalContent: turn.content };
+			}
+			if (finalStep) {
+				// Leaving tool calls unanswered would make the stored history invalid
+				// for the next request, so every pending call gets a closing result.
+				for (const call of turn.toolCalls) {
+					messages.push({ role: 'tool', toolCallId: call.id, content: serializeToolResult({ error: FINAL_STEP_TOOL_REJECTION }) });
+				}
+				return {
+					messages: withoutEphemeral(messages, ephemeral),
+					finalContent: turn.content.trim() || FINAL_STEP_FALLBACK,
+				};
 			}
 
 			const plannedChanges: PlannedChange[] = [];
 			const summaries: string[] = [];
 			const applyActions: Array<() => Promise<void>> = [];
+			const stepResults = new Map<string, string>();
 			for (const call of turn.toolCalls) {
 				this.onToolCall?.(call);
-				const tool = toolsByName.get(call.name);
-				if (!tool) {
-					messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: `未知工具：${call.name}` }) });
+				const key = toolCallKey(call);
+				const reused = stepResults.get(key);
+				if (reused !== undefined) {
+					messages.push({ role: 'tool', toolCallId: call.id, content: reused });
 					continue;
 				}
-				if (tool.kind === 'read-only') {
-					try {
-						const result = await tool.execute(call.arguments);
-						messages.push({ role: 'tool', toolCallId: call.id, content: serializeToolResult(result) });
-					} catch (error) {
-						messages.push({ role: 'tool', toolCallId: call.id, content: serializeToolError(error) });
-					}
+				const tool = toolsByName.get(call.name);
+				if (!tool) {
+					messages.push({ role: 'tool', toolCallId: call.id, content: serializeToolResult({ error: `未知工具：${call.name}` }) });
 					continue;
 				}
 
-				try {
-					const plan = await tool.plan(call.arguments);
-					summaries.push(plan.summary);
-					plannedChanges.push(...plan.changes);
-					if (plan.apply) applyActions.push(plan.apply);
-					messages.push({
-						role: 'tool',
-						toolCallId: call.id,
-						content: serializeToolResult({ planned: true, summary: plan.summary, changes: plan.changes.map(({ id, summary }) => ({ id, summary })) }),
-					});
-				} catch (error) {
-					messages.push({ role: 'tool', toolCallId: call.id, content: serializeToolError(error) });
+				let content: string;
+				if (tool.kind === 'read-only') {
+					try {
+						content = this.budget(call.name, serializeToolResult(await tool.execute(call.arguments)));
+					} catch (error) {
+						content = serializeToolError(error);
+					}
+				} else {
+					try {
+						const plan = await tool.plan(call.arguments);
+						summaries.push(plan.summary);
+						plannedChanges.push(...plan.changes);
+						if (plan.apply) applyActions.push(plan.apply);
+						content = serializeToolResult({
+							planned: true,
+							summary: plan.summary,
+							changes: plan.changes.map(({ id, summary }) => ({ id, summary })),
+						});
+					} catch (error) {
+						content = serializeToolError(error);
+					}
 				}
+
+				const streak = repeats.record(key);
+				if (streak >= REPEAT_FORCE_FINAL_STREAK) forceFinalStep = true;
+				const reminder = repeatReminder(streak);
+				if (reminder) content += reminder;
+				stepResults.set(key, content);
+				messages.push({ role: 'tool', toolCallId: call.id, content });
 			}
 
 			if (plannedChanges.length > 0) {
 				return {
-					messages: withoutRuntimeContext(messages, contextMessage),
+					messages: withoutEphemeral(messages, ephemeral),
 					pendingChangePlan: {
 						id: `agent-plan-${turnIndex + 1}`,
 						summary: summaries.join('；'),
@@ -193,10 +236,53 @@ export class AgentLoop {
 
 		throw new Error(`Agent Loop 超过最大轮数（${this.maxTurns}）`);
 	}
+
+	private budget(toolName: string, content: string): string {
+		return budgetToolResultText(toolName, content, this.toolResultBudget).content;
+	}
 }
 
-function withoutRuntimeContext(messages: AgentMessage[], contextMessage?: AgentMessage): AgentMessage[] {
-	return contextMessage ? messages.filter((message) => message !== contextMessage) : messages;
+const REPEAT_REMINDER_STREAK = 3;
+const REPEAT_FORCE_FINAL_STREAK = 6;
+const FINAL_STEP_REMINDER = '已达到本轮工具调用上限：不要再调用任何工具，直接用已有信息给出结论，并说明还缺哪些信息。';
+const FINAL_STEP_TOOL_REJECTION = '未执行：已达到本轮工具调用上限。';
+const FINAL_STEP_FALLBACK = '已达到本轮工具调用上限，没有得出结论。请补充信息或缩小请求范围后重试。';
+
+/** Counts consecutive identical tool calls so a spinning loop can be broken. */
+class RepeatTracker {
+	private lastKey?: string;
+	private streak = 0;
+
+	record(key: string): number {
+		this.streak = key === this.lastKey ? this.streak + 1 : 1;
+		this.lastKey = key;
+		return this.streak;
+	}
+}
+
+function repeatReminder(streak: number): string | undefined {
+	if (streak < REPEAT_REMINDER_STREAK) return undefined;
+	if (streak < REPEAT_FORCE_FINAL_STREAK) {
+		return `\n\n[提示] 同一个工具调用已连续重复 ${streak} 次。下一步先说明你期望得到什么新信息；如果这个结果里已经有了，就用现有证据继续，不要重复调用。`;
+	}
+	return `\n\n[提示] 同一个工具调用已连续重复 ${streak} 次，本轮不再执行更多工具调用。请直接给出结论，并说明还缺哪些信息。`;
+}
+
+function toolCallKey(call: AgentToolCall): string {
+	return `${call.name} ${canonicalArguments(call.arguments)}`;
+}
+
+function canonicalArguments(value: unknown): string {
+	if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+	if (Array.isArray(value)) return `[${value.map((item) => canonicalArguments(item)).join(',')}]`;
+	const entries = Object.entries(value as Record<string, unknown>)
+		.filter(([, item]) => item !== undefined)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalArguments(item)}`).join(',')}}`;
+}
+
+function withoutEphemeral(messages: AgentMessage[], ephemeral: AgentMessage[]): AgentMessage[] {
+	return ephemeral.length === 0 ? messages : messages.filter((message) => !ephemeral.includes(message));
 }
 
 function summarizeOmittedHistory(messages: AgentMessage[]): string {

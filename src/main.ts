@@ -13,7 +13,7 @@ import { confirmAgentStart, confirmRemoteSend, showChangePreview } from './ui/mo
 import { AgentLoop, type AgentMessage, type AgentToolCall } from './agent/agent-loop';
 import { createVaultReadTools } from './agent/vault-tools';
 import { createVaultMutationTools } from './agent/vault-mutation-tools';
-import { buildSkillPrompt, loadSkills } from './agent/skills';
+import { buildSkillPrompt, createSkillTools, loadSkills } from './agent/skills';
 import { SessionRuntime } from './agent/session-runtime';
 import { PluginDataStore } from './obsidian/plugin-data-store';
 
@@ -176,10 +176,14 @@ export default class AiNoteAssistantPlugin extends Plugin {
 			}
 
 			const skills = await loadSkills(this.vaultAdapter);
-			view.addProcessStep(`已加载 ${skills.length} 个 Vault 技能`);
+			view.addProcessStep(`已加载 ${skills.length} 个 Vault 技能（正文按需读取）`);
 			const loop = new AgentLoop(
 				this.agentModel,
-				[...createVaultReadTools(this.vaultAdapter), ...createVaultMutationTools(this.vaultAdapter)],
+				[
+					...createVaultReadTools(this.vaultAdapter),
+					...createSkillTools(skills),
+					...createVaultMutationTools(this.vaultAdapter),
+				],
 				{
 					historyLimit: 48,
 					systemPrompt: buildSkillPrompt(skills),
@@ -231,10 +235,13 @@ function describeToolCall(call: AgentToolCall): string {
 	const path = typeof arguments_.path === 'string' ? arguments_.path : undefined;
 	const query = typeof arguments_.query === 'string' ? arguments_.query : undefined;
 	const scope = typeof arguments_.scope === 'string' ? arguments_.scope : undefined;
+	const name = typeof arguments_.name === 'string' ? arguments_.name : undefined;
+	const offset = typeof arguments_.offset === 'number' ? arguments_.offset : undefined;
 	if (call.name === 'searchNotes') return `工具：搜索关键词“${query ?? ''}”${scope ? `（范围：${scope}）` : ''}`;
-	if (call.name === 'readNote') return `工具：读取笔记全文 ${path ?? ''}`;
+	if (call.name === 'readNote') return `工具：读取笔记 ${path ?? ''}${offset === undefined ? '' : `（从第 ${offset} 行起）`}`;
 	if (call.name === 'listNotes') return `工具：列出笔记${scope ? `（范围：${scope}）` : ''}`;
 	if (call.name === 'getLinkContext') return `工具：读取链接上下文 ${path ?? ''}`;
+	if (call.name === 'useSkill') return `工具：读取技能正文 ${name ?? ''}`;
 	if (call.name === 'updateNote') return `工具：生成编辑预览 ${path ?? ''}`;
 	if (call.name === 'editNote') return `工具：生成精确编辑预览 ${path ?? ''}`;
 	return `工具：${call.name}`;
