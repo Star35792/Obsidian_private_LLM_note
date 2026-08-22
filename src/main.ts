@@ -5,7 +5,9 @@ import {
 	AssistantSettingTab,
 } from './settings';
 import { AssistantView, VIEW_TYPE_ASSISTANT, type PendingChangeSelection } from './ui/assistant-view';
-import { createAppendChange, buildChangePreview } from './changes/change-plan';
+import { type NoteSnapshot } from './changes/change-plan';
+import { buildOrganizeWriteChoices } from './changes/organize-write';
+import { locateSelection, type SelectionTarget } from './changes/selection-target';
 import { buildHunkSelectionPreview } from './changes/hunk-selection';
 import { NoteAssistant } from './core/note-assistant';
 import { OpenAiCompatibleAdapter } from './model/openai-compatible-adapter';
@@ -27,7 +29,7 @@ export default class AiNoteAssistantPlugin extends Plugin {
 	private vaultAdapter!: ObsidianVaultAdapter;
 	private pluginData!: PluginDataStore;
 	private sessionRuntime!: SessionRuntime;
-	private remoteConfirmedThisSession = false;
+	private remoteConfirmedScope?: 'selection' | 'full';
 	private agentConfirmedThisSession = false;
 	private linkConfirmedThisSession = false;
 
@@ -116,37 +118,58 @@ export default class AiNoteAssistantPlugin extends Plugin {
 
 	private async runOrganize(view?: AssistantView): Promise<void> {
 		const source = await this.vaultAdapter.readActive();
-		view?.addProcessStep(`已读取 ${source.path}（${source.content.length} 个字符）`);
-		if (!this.remoteConfirmedThisSession) {
+		const selection = this.resolveSelection(source, view);
+		const sent = selection ? selection.text : source.content;
+		view?.addProcessStep(selection
+			? `已读取 ${source.path} 的选区（${sent.length} 个字符，全文 ${source.content.length} 个字符）`
+			: `已读取 ${source.path}（${source.content.length} 个字符）`);
+		const scope = selection ? 'selection' : 'full';
+		// 确认过全文就不必为更窄的选区再确认；只确认过选区时，改发全文要重新确认。
+		if (this.remoteConfirmedScope !== scope && this.remoteConfirmedScope !== 'full') {
 			view?.addProcessStep('等待确认本次发送范围');
-			const confirmed = await confirmRemoteSend(this.app, source.path, source.content);
+			const confirmed = await confirmRemoteSend(this.app, source.path, sent, selection ? '当前选区' : '当前笔记全文');
 			if (!confirmed) {
 				view?.setStatus('已取消发送，原笔记未改变。');
 				return;
 			}
-			this.remoteConfirmedThisSession = true;
-			view?.addProcessStep('用户已确认发送当前笔记内容');
+			this.remoteConfirmedScope = scope;
+			view?.addProcessStep(selection ? '用户已确认发送当前选区内容' : '用户已确认发送当前笔记内容');
 		}
 		view?.addProcessStep(`正在请求 ${this.settings.modelName}`);
 		view?.setStatus('模型正在生成结构化草稿…');
 		const result = await this.assistant.organize(
-			{ content: source.content },
+			selection ? { content: sent, selectionOnly: true } : { content: sent },
 			{ onDelta: (delta) => view?.appendStreamDelta(delta) },
 		);
 		view?.addProcessStep(result.streamed ? '流式输出接收完成' : '流式连接不可用，已完成普通响应');
 		view?.addProcessStep('结构化结果校验通过');
-		const preview = buildChangePreview(
-			source,
-			[createAppendChange(source.content, `\n\n${result.markdown}`)],
-			'整理结果默认追加到笔记末尾，原文保留。',
-		);
-		showChangePreview(this.app, preview, async () => {
-			await this.vaultAdapter.update(preview);
-			new Notice('整理结果已追加到当前笔记。');
-			view?.setStatus('已写回整理结果。');
+		const choices = buildOrganizeWriteChoices(source, result.markdown, selection);
+		showChangePreview(this.app, choices, result.markdown, async (choice) => {
+			await this.vaultAdapter.update(choice.preview);
+			new Notice(choice.id === 'replace-selection' ? '整理结果已替换选区。' : '整理结果已追加到当前笔记。');
+			view?.setStatus(choice.id === 'replace-selection' ? '已用整理结果替换选区。' : '已写回整理结果。');
 		});
-		view?.addProcessStep('写回预览已生成，原笔记尚未修改');
+		view?.addProcessStep(selection
+			? '写回预览已生成（可选替换选区或追加到末尾），原笔记尚未修改'
+			: '写回预览已生成，原笔记尚未修改');
 		view?.setStatus('已生成预览，请确认写回方式。');
+	}
+
+	/**
+	 * 编辑器有选区时只整理选区。选区要在已保存正文里重新定位，定位不了就整理全文，
+	 * 因为按编辑器偏移猜位置会写错地方。
+	 */
+	private resolveSelection(source: NoteSnapshot, view?: AssistantView): SelectionTarget | undefined {
+		const selection = this.vaultAdapter.getActiveSelection();
+		if (!selection) return undefined;
+		try {
+			return locateSelection(source.content, selection.text, selection.offsetHint);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : '未知错误';
+			new Notice(`选区无法定位，已按全文整理：${message}`);
+			view?.addProcessStep(`选区无法定位（${message}），本次按全文整理`);
+			return undefined;
+		}
 	}
 
 	/**

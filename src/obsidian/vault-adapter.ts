@@ -1,4 +1,4 @@
-import { App, TFile } from 'obsidian';
+import { App, MarkdownView, TFile } from 'obsidian';
 import { findSearchMatches } from '../agent/vault-tools';
 import type {
 	VaultNoteRef,
@@ -17,6 +17,12 @@ import {
 	type ChangePreview,
 	type NoteSnapshot,
 } from '../changes/change-plan';
+
+export interface ActiveSelection {
+	text: string;
+	/** 编辑器给出的起始字符偏移，只作为定位提示。 */
+	offsetHint: number;
+}
 
 export class ObsidianVaultAdapter implements VaultReadPort {
 	private readonly app: App;
@@ -88,6 +94,18 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 	getActiveNotePath(): string | undefined {
 		const file = this.app.workspace.getActiveFile();
 		return file instanceof TFile && file.extension === 'md' ? file.path : undefined;
+	}
+
+	/**
+	 * 编辑器里的选区。偏移只是定位提示：编辑器可能有未保存改动，写回仍以
+	 * `vault.read` 的内容为基准，由 `locateSelection` 在已保存正文里重新定位。
+	 */
+	getActiveSelection(): ActiveSelection | undefined {
+		const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+		if (!editor) return undefined;
+		const text = editor.getSelection();
+		if (text.trim() === '') return undefined;
+		return { text, offsetHint: editor.posToOffset(editor.getCursor('from')) };
 	}
 
 	getRevision(snapshot: NoteSnapshot): string {

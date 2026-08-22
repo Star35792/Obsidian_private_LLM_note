@@ -13,6 +13,8 @@ import type { LinkBrief } from '../links/link-brief';
 export interface OrganizeRequest {
 	content: string;
 	additionalInstructions?: string;
+	/** 内容只是笔记中的一段选区时置为 true，模型不会假装看到了全文。 */
+	selectionOnly?: boolean;
 }
 
 export interface OrganizeResult {
@@ -49,13 +51,18 @@ export class NoteAssistant {
 				'可选 classification 对象包含 type、tags、reason。不能把推测写成事实。',
 			].join('\n'),
 			user: [
-				'请整理下面的笔记，区分事实、判断、未验证假设、待澄清问题和下一步。',
+				request.selectionOnly
+					? '请整理下面这段选区内容，区分事实、判断、未验证假设、待澄清问题和下一步。'
+					: '请整理下面的笔记，区分事实、判断、未验证假设、待澄清问题和下一步。',
+				request.selectionOnly
+					? '这只是笔记中的一段选区，不是全文；缺少的上下文写成待澄清问题，不要替用户补全。'
+					: '',
 				request.additionalInstructions ? `用户补充要求：${request.additionalInstructions}` : '',
-				'笔记内容开始',
+				request.selectionOnly ? '选区内容开始' : '笔记内容开始',
 				'---',
 				request.content,
 				'---',
-				'笔记内容结束',
+				request.selectionOnly ? '选区内容结束' : '笔记内容结束',
 			].filter(Boolean).join('\n'),
 		}, options);
 		const proposal = parseAssistantProposal(response.content);

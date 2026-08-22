@@ -198,6 +198,28 @@
 	white-space: pre-wrap;
 }
 
+.ai-note-assistant-preview-choices {
+	align-items: center;
+	color: var(--text-muted);
+	display: flex;
+	flex-wrap: wrap;
+	font-size: var(--font-small);
+	gap: 12px;
+	margin-bottom: 8px;
+}
+
+.ai-note-assistant-preview-choice {
+	align-items: center;
+	color: var(--text-normal);
+	cursor: pointer;
+	display: flex;
+	gap: 4px;
+}
+
+.ai-note-assistant-preview-choice input {
+	margin: 0;
+}
+
 .ai-note-assistant-modal-actions {
 	display: flex;
 	gap: 8px;

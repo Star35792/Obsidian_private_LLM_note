@@ -1,10 +1,10 @@
 import { App, Modal } from 'obsidian';
 import { renderTextDiff } from './diff-view';
-import type { ChangePreview } from '../changes/change-plan';
+import type { OrganizeWriteChoice } from '../changes/organize-write';
 import type { LinkBrief } from '../links/link-brief';
 
-export function confirmRemoteSend(app: App, path: string, content: string): Promise<boolean> {
-	return new Promise((resolve) => new RemoteSendModal(app, path, content, resolve).open());
+export function confirmRemoteSend(app: App, path: string, content: string, scope = '当前笔记全文'): Promise<boolean> {
+	return new Promise((resolve) => new RemoteSendModal(app, path, content, scope, resolve).open());
 }
 
 export function confirmLinkSend(app: App, path: string, sourceChars: number, briefs: LinkBrief[]): Promise<boolean> {
@@ -17,29 +17,32 @@ export function confirmAgentStart(app: App, path: string | undefined, request: s
 
 export function showChangePreview(
 	app: App,
-	preview: ChangePreview,
-	onApply: () => Promise<void>,
+	choices: OrganizeWriteChoice[],
+	copyText: string,
+	onApply: (choice: OrganizeWriteChoice) => Promise<void>,
 ): void {
-	new ChangePreviewModal(app, preview, onApply).open();
+	new ChangePreviewModal(app, choices, copyText, onApply).open();
 }
 
 class RemoteSendModal extends Modal {
 	private readonly path: string;
 	private readonly content: string;
+	private readonly scopeLabel: string;
 	private readonly resolveChoice: (confirmed: boolean) => void;
 	private resolved = false;
 
-	constructor(app: App, path: string, content: string, resolveChoice: (confirmed: boolean) => void) {
+	constructor(app: App, path: string, content: string, scopeLabel: string, resolveChoice: (confirmed: boolean) => void) {
 		super(app);
 		this.path = path;
 		this.content = content;
+		this.scopeLabel = scopeLabel;
 		this.resolveChoice = resolveChoice;
 	}
 
 	onOpen(): void {
 		this.contentEl.createEl('h2', { text: '确认发送笔记内容' });
 		this.contentEl.createEl('p', { text: `将发送给远程模型：${this.path}` });
-		this.contentEl.createEl('p', { text: `本次发送 ${this.content.length} 个字符，仅包含当前笔记内容。` });
+		this.contentEl.createEl('p', { text: `本次发送 ${this.content.length} 个字符，范围是${this.scopeLabel}。` });
 		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
 		this.addButton(actions, '取消', false);
 		this.addButton(actions, '确认发送', true);
@@ -168,37 +171,78 @@ class AgentStartModal extends Modal {
 }
 
 class ChangePreviewModal extends Modal {
-	private readonly preview: ChangePreview;
-	private readonly applyChanges: () => Promise<void>;
+	private readonly choices: OrganizeWriteChoice[];
+	private readonly copyText: string;
+	private readonly applyChoice: (choice: OrganizeWriteChoice) => Promise<void>;
+	private activeIndex = 0;
+	private detail!: HTMLElement;
 
-	constructor(app: App, preview: ChangePreview, applyChanges: () => Promise<void>) {
+	constructor(
+		app: App,
+		choices: OrganizeWriteChoice[],
+		copyText: string,
+		applyChoice: (choice: OrganizeWriteChoice) => Promise<void>,
+	) {
 		super(app);
-		this.preview = preview;
-		this.applyChanges = applyChanges;
+		if (choices.length === 0) throw new Error('没有可写回的方式');
+		this.choices = choices;
+		this.copyText = copyText;
+		this.applyChoice = applyChoice;
 	}
 
 	onOpen(): void {
 		this.contentEl.createEl('h2', { text: '整理结果预览' });
-		this.contentEl.createEl('p', { text: this.preview.reason });
-		renderTextDiff(this.contentEl, this.preview.originalContent, this.preview.proposedContent);
-		const fullResult = this.contentEl.createEl('details', { cls: 'ai-note-assistant-preview-full' });
-		fullResult.createEl('summary', { text: '查看写回后的完整内容' });
-		fullResult.createEl('pre', { text: this.preview.proposedContent });
+		if (this.choices.length > 1) this.renderChoicePicker();
+		this.detail = this.contentEl.createDiv({ cls: 'ai-note-assistant-preview-detail' });
+		this.renderDetail();
 
 		const actions = this.contentEl.createDiv({ cls: 'ai-note-assistant-modal-actions' });
 		this.addButton(actions, '取消', () => this.close());
-		this.addButton(actions, '复制结果', async () => {
-			await navigator.clipboard.writeText(this.preview.proposedContent);
+		this.addButton(actions, '复制整理结果', async () => {
+			await navigator.clipboard.writeText(this.copyText);
 			this.close();
 		});
-		this.addButton(actions, '追加到笔记', async () => {
-			await this.applyChanges();
+		this.addButton(actions, '确认写回', async () => {
+			await this.applyChoice(this.active());
 			this.close();
 		});
 	}
 
 	onClose(): void {
 		this.contentEl.empty();
+	}
+
+	/** 切换写回方式时重画差异，避免用户看到的是另一种方式的差异。 */
+	private renderChoicePicker(): void {
+		const picker = this.contentEl.createDiv({ cls: 'ai-note-assistant-preview-choices' });
+		picker.createSpan({ text: '写回方式：' });
+		this.choices.forEach((choice, index) => {
+			const label = picker.createEl('label', { cls: 'ai-note-assistant-preview-choice' });
+			const input = label.createEl('input');
+			input.type = 'radio';
+			input.name = 'ai-note-assistant-write-choice';
+			input.checked = index === this.activeIndex;
+			input.addEventListener('change', () => {
+				if (!input.checked) return;
+				this.activeIndex = index;
+				this.renderDetail();
+			});
+			label.createSpan({ text: choice.label });
+		});
+	}
+
+	private renderDetail(): void {
+		const preview = this.active().preview;
+		this.detail.empty();
+		this.detail.createEl('p', { text: preview.reason });
+		renderTextDiff(this.detail, preview.originalContent, preview.proposedContent);
+		const fullResult = this.detail.createEl('details', { cls: 'ai-note-assistant-preview-full' });
+		fullResult.createEl('summary', { text: '查看写回后的完整内容' });
+		fullResult.createEl('pre', { text: preview.proposedContent });
+	}
+
+	private active(): OrganizeWriteChoice {
+		return this.choices[this.activeIndex]!;
 	}
 
 	private addButton(container: HTMLElement, label: string, action: () => void | Promise<void>): void {
