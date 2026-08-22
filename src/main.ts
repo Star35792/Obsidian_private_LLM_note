@@ -1,15 +1,26 @@
-import { MarkdownView, Notice, Plugin } from 'obsidian';
+import { Notice, Plugin } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	AiNoteAssistantSettings,
 	AssistantSettingTab,
 } from './settings';
-import { AssistantView, VIEW_TYPE_ASSISTANT, type PendingChangeSelection } from './ui/assistant-view';
+import { AssistantView, VIEW_TYPE_ASSISTANT, type AssistantMode, type PendingChangeSelection } from './ui/assistant-view';
+import type { CompletionCandidate, CompletionKind } from './ui/composer-completion';
+import {
+	buildMentionContext,
+	buildSkillContext,
+	matchesCommandToken,
+	parsePromptInput,
+	resolveMentions,
+	slugifyCommandName,
+	type MentionTargets,
+} from './agent/prompt-input';
 import { type NoteSnapshot } from './changes/change-plan';
 import { buildOrganizeWriteChoices } from './changes/organize-write';
 import { locateSelection, type SelectionTarget } from './changes/selection-target';
 import { buildHunkSelectionPreview } from './changes/hunk-selection';
 import { NoteAssistant } from './core/note-assistant';
+import type { ModelRetryInfo } from './model/model-retry';
 import { OpenAiCompatibleAdapter } from './model/openai-compatible-adapter';
 import { ObsidianVaultAdapter } from './obsidian/vault-adapter';
 import { confirmAgentStart, confirmLinkSend, confirmRemoteSend, showChangePreview } from './ui/modals';
@@ -21,6 +32,12 @@ import { SessionRuntime } from './agent/session-runtime';
 import { PluginDataStore } from './obsidian/plugin-data-store';
 import { buildLinkBriefs, DEFAULT_MODEL_CANDIDATE_LIMIT } from './links/link-brief';
 import { buildLinkSuggestionPreview, DEFAULT_SUGGESTION_LIMIT } from './links/link-suggestion';
+
+/** 内置 `/` 命令：固定流水线，输入仍是当前笔记或选区，不接受补充说明。 */
+const BUILT_IN_COMMANDS: ReadonlyArray<{ name: string; description: string; mode: AssistantMode }> = [
+	{ name: '整理', description: '整理当前笔记或选区，生成写回预览', mode: 'organize' },
+	{ name: '寻找关联', description: '用本地候选生成双链建议，逐条确认写回', mode: 'related' },
+];
 
 export default class AiNoteAssistantPlugin extends Plugin {
 	settings!: AiNoteAssistantSettings;
@@ -38,17 +55,17 @@ export default class AiNoteAssistantPlugin extends Plugin {
 		this.sessionRuntime = new SessionRuntime(this.pluginData);
 		await this.sessionRuntime.open();
 		this.vaultAdapter = new ObsidianVaultAdapter(this.app, () => this.settings.localCandidateLimit);
-		this.agentModel = new OpenAiCompatibleAdapter(() => this.settings);
+		this.agentModel = new OpenAiCompatibleAdapter(() => this.settings, (info) => this.reportModelRetry(info));
 		this.assistant = new NoteAssistant(this.agentModel);
 		this.registerView(VIEW_TYPE_ASSISTANT, (leaf) => new AssistantView(leaf, this));
 		this.addRibbonIcon('brain', '打开思维整理', () => void this.activateView());
 
-		this.addCommand({ id: 'capture-thought', name: '捕捉当前想法', callback: () => this.openMode('capture') });
-		this.addCommand({ id: 'organize-current-note', name: '整理当前笔记', callback: () => this.openMode('organize') });
-		this.addCommand({ id: 'clarify-current-note', name: '澄清当前想法', callback: () => this.openMode('clarify') });
-		this.addCommand({ id: 'challenge-current-thought', name: '挑战当前想法', callback: () => this.openMode('challenge') });
-		this.addCommand({ id: 'actionize-current-note', name: '生成下一步', callback: () => this.openMode('actionize') });
-		this.addCommand({ id: 'suggest-related-notes', name: '寻找相关笔记', callback: () => this.openMode('related') });
+		this.addCommand({ id: 'capture-thought', name: '捕捉当前想法', callback: () => void this.openAndRun('capture') });
+		this.addCommand({ id: 'organize-current-note', name: '整理当前笔记', callback: () => void this.openAndRun('organize') });
+		this.addCommand({ id: 'clarify-current-note', name: '澄清当前想法', callback: () => void this.openAndRun('clarify') });
+		this.addCommand({ id: 'challenge-current-thought', name: '挑战当前想法', callback: () => void this.openAndRun('challenge') });
+		this.addCommand({ id: 'actionize-current-note', name: '生成下一步', callback: () => void this.openAndRun('actionize') });
+		this.addCommand({ id: 'suggest-related-notes', name: '寻找相关笔记', callback: () => void this.openAndRun('related') });
 		this.addCommand({ id: 'new-agent-session', name: '新建助手会话', callback: () => void this.startNewSession() });
 
 		this.addSettingTab(new AssistantSettingTab(this.app, this));
@@ -78,24 +95,109 @@ export default class AiNoteAssistantPlugin extends Plugin {
 		await this.app.workspace.revealLeaf(leaf);
 	}
 
-	private async openMode(mode: AssistantView['mode']): Promise<void> {
+	private async openAndRun(mode: AssistantMode): Promise<void> {
 		await this.activateView();
-		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
-		if (view instanceof AssistantView) {
-			view.setMode(mode);
+		if (!this.getAssistantView()) {
+			new Notice('请先打开思维整理侧栏。');
 			return;
 		}
-		if (!this.app.workspace.getActiveViewOfType(MarkdownView)) {
-			new Notice('请先打开一篇 Markdown 笔记。');
+		await this.runMode(mode);
+	}
+
+	/** 候选只在面板打开时取一次：`/` 给命令与技能，`@` 给笔记与文件夹，都不读取正文。 */
+	async completionCandidates(kind: CompletionKind): Promise<CompletionCandidate[]> {
+		if (kind === 'command') {
+			const skills = await loadSkills(this.vaultAdapter);
+			return [
+				...BUILT_IN_COMMANDS.map((command) => ({
+					value: slugifyCommandName(command.name),
+					label: `/${command.name}`,
+					description: command.description,
+				})),
+				...skills.map((skill) => ({
+					value: slugifyCommandName(skill.name),
+					label: `/${skill.name}`,
+					description: skill.description || `Vault 技能（${skill.path}）`,
+				})),
+			];
+		}
+		const targets = await this.mentionTargets();
+		return [
+			...targets.folders.map((folder) => ({ value: `${folder}/`, label: `${folder}/`, isFolder: true })),
+			...targets.notes.map((note) => ({ value: note.path, label: note.title, description: note.path })),
+		];
+	}
+
+	/**
+	 * 侧栏输入框的唯一入口。`/` 命令决定走固定流水线还是显式技能，`@` 提及只声明本轮
+	 * 工作范围：路径进运行环境提示，正文仍由模型按需读取。
+	 */
+	async submitPrompt(text: string): Promise<void> {
+		const parsed = parsePromptInput(text);
+		const view = this.getAssistantView();
+		view?.setBusy(true);
+		try {
+			const steps: string[] = [];
+			const extraContext: string[] = [];
+			let skillName: string | undefined;
+			if (parsed.commandToken) {
+				const token = parsed.commandToken;
+				const builtIn = BUILT_IN_COMMANDS.find((command) => matchesCommandToken(command.name, token));
+				if (builtIn) {
+					await this.runMode(builtIn.mode, this.describeBuiltIn(builtIn, parsed.commandArguments, parsed.mentions.length));
+					return;
+				}
+				const skill = (await loadSkills(this.vaultAdapter))
+					.find((candidate) => matchesCommandToken(candidate.name, token));
+				if (skill) {
+					skillName = skill.name;
+					extraContext.push(buildSkillContext(skill));
+					steps.push(`已显式触发技能「${skill.name}」（正文来自 ${skill.path}，只作为本轮运行环境提示）`);
+				} else {
+					steps.push(`/${token} 既不是内置命令也不是 Vault 技能，本轮按普通消息发送`);
+				}
+			}
+			if (parsed.mentions.length > 0) {
+				const resolution = resolveMentions(parsed.mentions, await this.mentionTargets());
+				const mentionContext = buildMentionContext(resolution);
+				if (mentionContext) extraContext.push(mentionContext);
+				if (resolution.notes.length > 0) steps.push(`本轮指定笔记：${resolution.notes.join('、')}（正文按需读取）`);
+				if (resolution.folders.length > 0) steps.push(`本轮指定文件夹：${resolution.folders.join('、')}`);
+				for (const item of resolution.unresolved) steps.push(`${item.raw} 未解析：${item.reason}`);
+			}
+			const message = skillName
+				? parsed.commandArguments || `请按技能「${skillName}」处理当前任务。`
+				: parsed.text;
+			await this.runAgent(message, { extraContext, processSteps: steps });
+		} finally {
+			view?.setBusy(false);
 		}
 	}
 
-	async runMode(mode: AssistantView['mode']): Promise<void> {
+	private describeBuiltIn(
+		command: { name: string; description: string },
+		commandArguments: string,
+		mentionCount: number,
+	): string[] {
+		const steps = [`内置命令 /${command.name}：${command.description}`];
+		if (commandArguments) {
+			steps.push(`补充说明「${commandArguments}」未使用：内置命令按固定流程运行，需要额外要求请直接对话`);
+		}
+		if (mentionCount > 0) steps.push('内置命令以当前笔记或选区为输入，本轮的 @ 范围未使用');
+		return steps;
+	}
+
+	private async mentionTargets(): Promise<MentionTargets> {
+		return { notes: await this.vaultAdapter.listNotes(), folders: this.vaultAdapter.listFolders() };
+	}
+
+	async runMode(mode: AssistantMode, steps: readonly string[] = []): Promise<void> {
 		const view = this.getAssistantView();
 		view?.beginProcess();
+		for (const step of steps) view?.addProcessStep(step);
 		if (mode !== 'organize' && mode !== 'related') {
-			new Notice('该动作将在后续切片中启用。当前可用动作是“整理”和“寻找关联”。');
-			view?.setStatus('当前可用动作是“整理”和“寻找关联”。');
+			new Notice('该动作将在后续切片中启用。当前可用命令是 /整理 和 /寻找关联。');
+			view?.setStatus('当前可用命令是 /整理 和 /寻找关联。');
 			return;
 		}
 		const label = mode === 'organize' ? '整理' : '寻找关联';
@@ -235,11 +337,15 @@ export default class AiNoteAssistantPlugin extends Plugin {
 			: '已生成双链建议，请逐条确认写回。');
 	}
 
-	async runAgent(userMessage: string): Promise<void> {
+	async runAgent(
+		userMessage: string,
+		options: { extraContext?: readonly string[]; processSteps?: readonly string[] } = {},
+	): Promise<void> {
 		const view = this.getAssistantView();
 		if (!view) return;
 		if (!userMessage.trim()) return;
 		view.beginProcess();
+		for (const step of options.processSteps ?? []) view.addProcessStep(step);
 		view.setStatus('正在准备对话…');
 		if (!this.settings.remoteModelEnabled) {
 			view.setStatus('远程模型已关闭，未发送任何内容。');
@@ -280,9 +386,12 @@ export default class AiNoteAssistantPlugin extends Plugin {
 			);
 			view.addProcessStep(`正在请求 ${this.settings.modelName}`);
 			view.setStatus('模型正在处理对话…');
-			const runtimeContext = activeNotePath
-				? `运行环境：当前活动笔记路径是 ${activeNotePath}。正文尚未读取；需要时使用 searchNotes 或 readNote。`
-				: '运行环境：当前没有活动 Markdown 笔记。需要时使用 listNotes 或 searchNotes 定位笔记。';
+			const runtimeContext = [
+				activeNotePath
+					? `运行环境：当前活动笔记路径是 ${activeNotePath}。正文尚未读取；需要时使用 searchNotes 或 readNote。`
+					: '运行环境：当前没有活动 Markdown 笔记。需要时使用 listNotes 或 searchNotes 定位笔记。',
+				...(options.extraContext ?? []),
+			].join('\n\n');
 			const result = await loop.run(userMessage.trim(), this.sessionRuntime.history(), runtimeContext);
 			await this.sessionRuntime.commit(result.messages);
 			view.setConversation(result.messages);
@@ -343,10 +452,26 @@ export default class AiNoteAssistantPlugin extends Plugin {
 		new Notice('已新建助手会话。');
 	}
 
+	/** 重试要让用户看见：说明原因、等待时间和第几次尝试，并丢弃上一次已经显示的增量。 */
+	private reportModelRetry(info: ModelRetryInfo): void {
+		const view = this.getAssistantView();
+		if (info.discardOutput) view?.resetStream();
+		const attempt = `第 ${info.attempt}/${info.attempts} 次尝试`;
+		view?.addProcessStep(info.delayMs > 0
+			? `${info.reason}，${describeDelay(info.delayMs)}后重试（${attempt}）`
+			: `${info.reason}（${attempt}）`);
+		view?.setStatus(`模型请求失败，正在重试（${attempt}）…`);
+	}
+
 	private getAssistantView(): AssistantView | undefined {
 		const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_ASSISTANT)[0]?.view;
 		return view instanceof AssistantView ? view : undefined;
 	}
+}
+
+function describeDelay(delayMs: number): string {
+	const seconds = delayMs / 1000;
+	return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} 秒`;
 }
 
 /** Plugin data can hold anything from an older version, so limits are re-checked before use. */

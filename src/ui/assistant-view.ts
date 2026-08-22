@@ -1,5 +1,6 @@
 import { ItemView, MarkdownView, WorkspaceLeaf } from 'obsidian';
 import { renderSelectableTextDiff, renderTextDiff } from './diff-view';
+import { Composer } from './composer';
 import {
 	CONFIDENCE_LABELS,
 	RELATION_LABELS,
@@ -24,39 +25,20 @@ export interface PendingChangeSelection {
 
 export type AssistantMode = 'capture' | 'organize' | 'clarify' | 'challenge' | 'actionize' | 'related';
 
-const MODE_LABELS: Record<AssistantMode, string> = {
-	capture: '捕捉',
-	organize: '整理',
-	clarify: '澄清',
-	challenge: '挑战',
-	actionize: '行动化',
-	related: '寻找关联',
-};
-
-const RUN_LABELS: Partial<Record<AssistantMode, string>> = {
-	organize: '生成整理预览',
-	related: '生成双链建议',
-};
-
-const MODE_HINTS: Partial<Record<AssistantMode, string>> = {
-	organize: '整理会读取当前笔记，并在发送前显示范围。',
-	related: '寻找关联会先用本地元数据筛候选，再发送当前笔记和候选片段，发送前显示范围。',
-};
+const DEFAULT_STATUS = '输入 / 唤醒命令与技能，输入 @ 指定要读或要改的笔记与文件夹；正文仍按需读取。';
 
 export class AssistantView extends ItemView {
 	private readonly plugin: AiNoteAssistantPlugin;
-	mode?: AssistantMode;
 	private contextEl?: HTMLElement;
 	private statusEl?: HTMLElement;
 	private processEl?: HTMLElement;
 	private streamEl?: HTMLElement;
 	private conversationEl?: HTMLElement;
 	private pendingEl?: HTMLElement;
-	private inputEl?: HTMLTextAreaElement;
+	private composer?: Composer;
 	private processSteps: string[] = [];
 	private streamedText = '';
 	private conversation: AgentMessage[] = [];
-	private submitting = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: AiNoteAssistantPlugin) {
 		super(leaf);
@@ -86,13 +68,13 @@ export class AssistantView extends ItemView {
 		return Promise.resolve();
 	}
 
-	setMode(mode?: AssistantMode): void {
-		this.mode = mode;
-		this.render();
-	}
-
 	setStatus(status: string): void {
 		if (this.statusEl) this.statusEl.setText(status);
+	}
+
+	/** 运行期间禁用输入，避免同一轮里重复提交。 */
+	setBusy(busy: boolean): void {
+		this.composer?.setDisabled(busy);
 	}
 
 	beginProcess(): void {
@@ -109,6 +91,12 @@ export class AssistantView extends ItemView {
 	appendStreamDelta(delta: string): void {
 		this.streamedText += delta;
 		if (this.streamEl) this.streamEl.setText(this.streamedText);
+	}
+
+	/** 重试同一请求前丢弃上一次尝试的增量，否则两次输出会拼在一起。 */
+	resetStream(): void {
+		this.streamedText = '';
+		this.renderProcess();
 	}
 
 	setConversation(messages: AgentMessage[]): void {
@@ -279,57 +267,21 @@ export class AssistantView extends ItemView {
 		this.contextEl = contextSection.createDiv({ cls: 'ai-note-assistant-context' });
 		this.renderContext();
 
-		const actionsSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
-		actionsSection.createEl('h3', { text: '选择动作（可选）' });
-		const actions = actionsSection.createDiv({ cls: 'ai-note-assistant-actions' });
-		const noModeButton = actions.createEl('button', {
-			text: '不选择动作',
-			cls: this.mode ? undefined : 'mod-cta',
-		});
-		noModeButton.type = 'button';
-		noModeButton.addEventListener('click', () => this.setMode());
-		(Object.keys(MODE_LABELS) as AssistantMode[]).forEach((mode) => {
-			const button = actions.createEl('button', {
-				text: MODE_LABELS[mode],
-				cls: mode === this.mode ? 'mod-cta' : undefined,
-			});
-			button.type = 'button';
-			button.addEventListener('click', () => this.setMode(mode));
-		});
-
-		if (this.mode) {
-			const runButton = actionsSection.createEl('button', {
-				text: RUN_LABELS[this.mode] ?? `运行${MODE_LABELS[this.mode]}`,
-				cls: 'ai-note-assistant-run mod-cta',
-			});
-			runButton.type = 'button';
-			runButton.addEventListener('click', () => void this.plugin.runMode(this.mode));
-		}
-
 		const conversationSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
 		conversationSection.createEl('h3', { text: '对话' });
 		this.conversationEl = conversationSection.createDiv({ cls: 'ai-note-assistant-conversation' });
 		this.renderConversation();
-		const composer = conversationSection.createDiv({ cls: 'ai-note-assistant-composer' });
-		this.inputEl = composer.createEl('textarea', { attr: { rows: '3', placeholder: '告诉助手你想处理什么' } });
-		this.inputEl.addEventListener('keydown', (event) => {
-			if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-				event.preventDefault();
-				void this.submitMessage();
-			}
+		this.composer = new Composer(conversationSection, {
+			candidates: (kind) => this.plugin.completionCandidates(kind),
+			onSubmit: (text) => this.plugin.submitPrompt(text),
 		});
-		const sendButton = composer.createEl('button', { text: '发送', cls: 'mod-cta' });
-		sendButton.type = 'button';
-		sendButton.addEventListener('click', () => void this.submitMessage());
 
 		const planSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
 		planSection.createEl('h3', { text: '待确认变更' });
 		this.pendingEl = planSection.createDiv();
 
 		this.statusEl = contentEl.createDiv({ cls: 'ai-note-assistant-status' });
-		this.statusEl.setText(this.mode
-			? MODE_HINTS[this.mode] ?? `${MODE_LABELS[this.mode]}动作将在后续切片中启用。`
-			: '未选择动作。你可以直接在对话中描述任务，动作只是可选的快捷入口。');
+		this.statusEl.setText(DEFAULT_STATUS);
 
 		const processSection = contentEl.createDiv({ cls: 'ai-note-assistant-section' });
 		processSection.createEl('h3', { text: '处理过程' });
@@ -337,18 +289,6 @@ export class AssistantView extends ItemView {
 		processSection.createEl('h3', { text: '模型实时输出' });
 		this.streamEl = processSection.createEl('pre', { cls: 'ai-note-assistant-stream' });
 		this.renderProcess();
-	}
-
-	private async submitMessage(): Promise<void> {
-		const message = this.inputEl?.value.trim() ?? '';
-		if (!message || this.submitting) return;
-		this.submitting = true;
-		if (this.inputEl) this.inputEl.value = '';
-		try {
-			await this.plugin.runAgent(message);
-		} finally {
-			this.submitting = false;
-		}
 	}
 
 	private renderConversation(): void {

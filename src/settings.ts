@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import AiNoteAssistantPlugin from './main';
+import { DEFAULT_MODEL_RETRY_COUNT, MAX_MODEL_RETRY_COUNT } from './model/model-retry';
 import type { ModelApiFormat } from './model/openai-protocol';
 
 export interface AiNoteAssistantSettings {
@@ -8,6 +9,7 @@ export interface AiNoteAssistantSettings {
 	apiFormat: ModelApiFormat;
 	modelName: string;
 	apiKey: string;
+	modelRetryCount: number;
 	localCandidateLimit: number;
 	modelCandidateLimit: number;
 	suggestionLimit: number;
@@ -19,6 +21,7 @@ export const DEFAULT_SETTINGS: AiNoteAssistantSettings = {
 	apiFormat: 'chat-completions',
 	modelName: 'gpt-4o-mini',
 	apiKey: '',
+	modelRetryCount: DEFAULT_MODEL_RETRY_COUNT,
 	localCandidateLimit: 20,
 	modelCandidateLimit: 8,
 	suggestionLimit: 5,
@@ -71,6 +74,15 @@ export class AssistantSettingTab extends PluginSettingTab {
 				text.inputEl.type = 'password';
 			});
 
+		this.addNumberSetting(
+			containerEl,
+			'请求重试次数',
+			`网络中断、服务限流或 5xx 时自动重发同一请求的次数；0 表示不重试，最多 ${MAX_MODEL_RETRY_COUNT} 次。等待时间从 0.8 秒起指数增长，并遵守服务返回的 Retry-After。`,
+			'modelRetryCount',
+			0,
+			MAX_MODEL_RETRY_COUNT,
+		);
+
 		new Setting(containerEl).setName('关联候选数量').setHeading();
 		this.addNumberSetting(containerEl, '本地候选上限', '交给关联筛选的本地笔记数量。', 'localCandidateLimit');
 		this.addNumberSetting(containerEl, '模型候选上限', '发送给模型的候选片段数量。', 'modelCandidateLimit');
@@ -93,20 +105,24 @@ export class AssistantSettingTab extends PluginSettingTab {
 			}));
 	}
 
+	/** `min` 可以是 0，因为“不重试”是合法选择；越界输入直接忽略，不写坏已保存的值。 */
 	private addNumberSetting(
 		containerEl: HTMLElement,
 		name: string,
 		desc: string,
-		key: 'localCandidateLimit' | 'modelCandidateLimit' | 'suggestionLimit',
+		key: 'localCandidateLimit' | 'modelCandidateLimit' | 'suggestionLimit' | 'modelRetryCount',
+		min = 1,
+		max?: number,
 	): void {
 		new Setting(containerEl).setName(name).setDesc(desc).addText((text) => {
 			text.setValue(String(this.plugin.settings[key]));
 			text.inputEl.type = 'number';
-			text.inputEl.min = '1';
+			text.inputEl.min = String(min);
+			if (max !== undefined) text.inputEl.max = String(max);
 			text.inputEl.step = '1';
 			text.onChange(async (value: string) => {
 				const parsed = Number.parseInt(value, 10);
-				if (Number.isInteger(parsed) && parsed > 0) {
+				if (Number.isInteger(parsed) && parsed >= min && (max === undefined || parsed <= max)) {
 					this.plugin.settings[key] = parsed;
 					await this.plugin.saveSettings();
 				}

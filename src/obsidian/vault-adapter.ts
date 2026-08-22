@@ -1,4 +1,4 @@
-import { App, MarkdownView, TFile } from 'obsidian';
+import { App, MarkdownView, TFile, TFolder } from 'obsidian';
 import { findSearchMatches } from '../agent/vault-tools';
 import type {
 	VaultNoteRef,
@@ -43,6 +43,15 @@ export class ObsidianVaultAdapter implements VaultReadPort {
 		return this.app.vault.getMarkdownFiles()
 			.filter((file) => !normalizedScope || file.path === normalizedScope || file.path.startsWith(`${normalizedScope}/`))
 			.map((file) => this.toNoteRef(file));
+	}
+
+	/** 文件夹路径清单，供 `@` 提及的候选与 scope 使用；不含 Vault 根目录。 */
+	listFolders(): string[] {
+		return this.app.vault.getAllLoadedFiles()
+			.filter((file): file is TFolder => file instanceof TFolder)
+			.map((folder) => folder.path)
+			.filter((path) => path !== '' && path !== '/')
+			.sort((left, right) => left.localeCompare(right));
 	}
 
 	async searchNotes(query: string, scope?: string): Promise<VaultSearchResult[]> {

@@ -30,22 +30,6 @@
 	line-height: 1.5;
 }
 
-.ai-note-assistant-actions {
-	display: grid;
-	gap: 8px;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.ai-note-assistant-actions button {
-	min-height: 32px;
-}
-
-.ai-note-assistant-run {
-	grid-column: 1 / -1;
-	margin-top: 4px;
-	min-height: 36px;
-}
-
 .ai-note-assistant-status {
 	background: var(--background-secondary);
 	border-left: 3px solid var(--interactive-accent);
@@ -99,12 +83,69 @@
 	display: grid;
 	gap: 8px;
 	margin-top: 10px;
+	position: relative;
 }
 
 .ai-note-assistant-composer textarea {
 	min-height: 72px;
 	resize: vertical;
 	width: 100%;
+}
+
+.ai-note-assistant-composer-actions {
+	align-items: center;
+	display: flex;
+	gap: 8px;
+	justify-content: space-between;
+}
+
+.ai-note-assistant-composer-hint {
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	line-height: 1.4;
+}
+
+/* 候选面板压在输入框上方，避免输入时侧栏高度跳动。 */
+.ai-note-assistant-completion {
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	bottom: 100%;
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+	left: 0;
+	margin-bottom: 6px;
+	max-height: 220px;
+	overflow-y: auto;
+	position: absolute;
+	right: 0;
+	z-index: 20;
+}
+
+.ai-note-assistant-completion-item {
+	align-items: baseline;
+	cursor: pointer;
+	display: flex;
+	gap: 8px;
+	padding: 6px 8px;
+}
+
+.ai-note-assistant-completion-item.is-active {
+	background: var(--background-modifier-hover);
+}
+
+.ai-note-assistant-completion-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ai-note-assistant-completion-description {
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	margin-left: auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .ai-note-assistant-change-card {

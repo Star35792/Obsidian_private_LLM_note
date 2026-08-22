@@ -23,6 +23,7 @@ describe('PluginDataStore', () => {
 			apiFormat: 'chat-completions',
 			modelName: 'new-model',
 			apiKey: '',
+			modelRetryCount: 2,
 			localCandidateLimit: 20,
 			modelCandidateLimit: 8,
 			suggestionLimit: 5,
