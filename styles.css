@@ -180,6 +180,26 @@
 	text-decoration-color: var(--text-faint);
 }
 
+.ai-note-assistant-diff-inline-line {
+	color: var(--text-normal);
+	text-decoration: none;
+}
+
+.ai-note-assistant-diff-inline {
+	border-radius: 3px;
+	padding: 0 1px;
+}
+
+.ai-note-assistant-diff-added .ai-note-assistant-diff-inline {
+	background: rgba(80, 200, 120, 0.42);
+}
+
+.ai-note-assistant-diff-removed .ai-note-assistant-diff-inline {
+	background: rgba(220, 90, 90, 0.42);
+	text-decoration: line-through;
+	text-decoration-color: var(--text-muted);
+}
+
 .ai-note-assistant-diff-note {
 	color: var(--text-accent);
 	font-size: var(--font-smallest);

@@ -1,5 +1,6 @@
 import { buildTextDiff, formatDiffStats } from '../changes/text-diff';
-import type { DiffLineKind, TextDiff, TextDiffOptions } from '../changes/text-diff';
+import type { DiffLine, DiffLineKind, TextDiff, TextDiffOptions } from '../changes/text-diff';
+import { buildInlineHunkDiff, type InlineDiffOptions, type InlineSegment } from '../changes/inline-diff';
 
 const LINE_PREFIX: Record<DiffLineKind, string> = {
 	context: ' ',
@@ -7,7 +8,7 @@ const LINE_PREFIX: Record<DiffLineKind, string> = {
 	removed: '-',
 };
 
-export interface DiffSelectionOptions extends TextDiffOptions {
+export interface DiffSelectionOptions extends TextDiffOptions, InlineDiffOptions {
 	/** 勾选状态变化时回调，参数是仍然选中的 hunk 序号。 */
 	onChange?: (selected: number[]) => void;
 }
@@ -24,7 +25,7 @@ export function renderTextDiff(
 	container: HTMLElement,
 	original: string,
 	proposed: string,
-	options?: TextDiffOptions,
+	options?: TextDiffOptions & InlineDiffOptions,
 ): TextDiff {
 	return renderDiff(container, original, proposed, options ?? {}, false).diff;
 }
@@ -72,11 +73,9 @@ function renderDiff(
 		} else {
 			header.setText(hunk.header);
 		}
-		for (const line of hunk.lines) {
-			hunkEl.createDiv({
-				text: `${LINE_PREFIX[line.kind]}${line.text}`,
-				cls: `ai-note-assistant-diff-line ai-note-assistant-diff-${line.kind}`,
-			});
+		const inline = buildInlineHunkDiff(hunk.lines, options);
+		for (const [lineIndex, line] of hunk.lines.entries()) {
+			renderLine(hunkEl, line, inline.get(lineIndex));
 		}
 	}
 	if (diff.truncated) {
@@ -92,4 +91,23 @@ function renderDiff(
 
 function sortedSelection(selected: Set<number>): number[] {
 	return [...selected].sort((left, right) => left - right);
+}
+
+/**
+ * 有字符级标注时逐段渲染，只给真正变化的字符加高亮；整行的删除线交给
+ * `ai-note-assistant-diff-inline-line` 关掉，否则行内标注会被整行删除线盖住。
+ */
+function renderLine(container: HTMLElement, line: DiffLine, segments?: InlineSegment[]): void {
+	const classes = ['ai-note-assistant-diff-line', `ai-note-assistant-diff-${line.kind}`];
+	if (!segments) {
+		container.createDiv({ text: `${LINE_PREFIX[line.kind]}${line.text}`, cls: classes.join(' ') });
+		return;
+	}
+	classes.push('ai-note-assistant-diff-inline-line');
+	const lineEl = container.createDiv({ cls: classes.join(' ') });
+	lineEl.createSpan({ text: LINE_PREFIX[line.kind] });
+	for (const segment of segments) {
+		if (segment.changed) lineEl.createSpan({ text: segment.text, cls: 'ai-note-assistant-diff-inline' });
+		else lineEl.createSpan({ text: segment.text });
+	}
 }
